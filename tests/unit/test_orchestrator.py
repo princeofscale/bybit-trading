@@ -5,28 +5,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from config.settings import AppSettings, RiskSettings
+from config.settings import AppSettings
 from config.strategy_profiles import MODERATE_PROFILE
 from core.orchestrator import TradingOrchestrator
-from core.event_bus import Event, EventType
-from exchange.models import Candle
+from data.models import OrderSide
 from strategies.base_strategy import Signal, SignalDirection
 
 
 @pytest.fixture
 def settings() -> AppSettings:
     return AppSettings(_env_file=None)
-
-
-@pytest.fixture
-async def orchestrator_mocked(settings: AppSettings, tmp_path: Path) -> TradingOrchestrator:
-    journal_path = tmp_path / "test_journal.db"
-    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
-
-    with patch.object(orch, "_client", AsyncMock()):
-        with patch.object(orch, "_rest_api", AsyncMock()):
-            with patch.object(orch, "_ws_manager", AsyncMock()):
-                yield orch
 
 
 async def test_session_id_generated(settings: AppSettings, tmp_path: Path) -> None:
@@ -37,58 +25,6 @@ async def test_session_id_generated(settings: AppSettings, tmp_path: Path) -> No
     assert len(orch._session_id) > 0
 
 
-async def test_signal_to_order_params_long(settings: AppSettings, tmp_path: Path) -> None:
-    journal_path = tmp_path / "journal.db"
-    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
-
-    from data.models import OrderSide
-
-    side, reduce = orch._signal_to_order_params(SignalDirection.LONG)
-    assert side == OrderSide.BUY
-    assert reduce is False
-
-
-async def test_signal_to_order_params_close_long(settings: AppSettings, tmp_path: Path) -> None:
-    journal_path = tmp_path / "journal.db"
-    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
-
-    from data.models import OrderSide
-
-    side, reduce = orch._signal_to_order_params(SignalDirection.CLOSE_LONG)
-    assert side == OrderSide.SELL
-    assert reduce is True
-
-
-async def test_parse_candle_from_list(settings: AppSettings, tmp_path: Path) -> None:
-    journal_path = tmp_path / "journal.db"
-    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
-
-    data = [1704110400000, 50000.0, 50100.0, 49900.0, 50050.0, 100.0]
-    candle = orch._parse_candle("BTCUSDT", data)
-
-    assert candle.symbol == "BTCUSDT"
-    assert candle.open_time == 1704110400000
-    assert candle.close == Decimal("50050")
-
-
-async def test_parse_candle_from_dict(settings: AppSettings, tmp_path: Path) -> None:
-    journal_path = tmp_path / "journal.db"
-    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
-
-    data = {
-        "timestamp": 1704110400000,
-        "open": 50000.0,
-        "high": 50100.0,
-        "low": 49900.0,
-        "close": 50050.0,
-        "volume": 100.0,
-    }
-    candle = orch._parse_candle("BTCUSDT", data)
-
-    assert candle.symbol == "BTCUSDT"
-    assert candle.close == Decimal("50050")
-
-
 async def test_request_shutdown_sets_event(settings: AppSettings, tmp_path: Path) -> None:
     journal_path = tmp_path / "journal.db"
     orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
@@ -96,3 +32,79 @@ async def test_request_shutdown_sets_event(settings: AppSettings, tmp_path: Path
     assert not orch._shutdown_event.is_set()
     orch.request_shutdown()
     assert orch._shutdown_event.is_set()
+
+
+async def test_initial_state_not_paused(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+
+    assert orch._trading_paused is False
+    assert orch._signals_count == 0
+    assert orch._trades_count == 0
+
+
+async def test_cmd_pause_sets_flag(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+
+    result = await orch._cmd_pause()
+    assert orch._trading_paused is True
+    assert "PAUSED" in result
+
+
+async def test_cmd_resume_clears_flag(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    orch._trading_paused = True
+
+    result = await orch._cmd_resume()
+    assert orch._trading_paused is False
+    assert "RESUMED" in result
+
+
+async def test_cmd_help_returns_commands(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+
+    result = await orch._cmd_help()
+    assert "/status" in result
+    assert "/positions" in result
+    assert "/pnl" in result
+
+
+async def test_cmd_status_with_no_managers(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+
+    result = await orch._cmd_status()
+    assert "Bot Status" in result
+    assert "RUNNING" in result
+
+
+async def test_cmd_pnl_with_no_managers(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+
+    result = await orch._cmd_pnl()
+    assert "PnL" in result
+    assert "0.00 USDT" in result
+
+
+async def test_poll_and_analyze_skips_when_paused(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    orch._trading_paused = True
+    orch._rest_api = AsyncMock()
+    orch._candle_buffer = MagicMock()
+
+    await orch._poll_and_analyze("BTC/USDT:USDT")
+
+    orch._rest_api.fetch_ohlcv.assert_not_called()
+
+
+async def test_poll_and_analyze_skips_without_rest_api(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+
+    await orch._poll_and_analyze("BTC/USDT:USDT")
+    assert orch._signals_count == 0
