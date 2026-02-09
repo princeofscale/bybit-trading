@@ -212,14 +212,10 @@ def _build_order_params(request: OrderRequest) -> dict[str, Any]:
         params["orderLinkId"] = request.client_order_id
     if request.stop_loss:
         sl_price = float(request.stop_loss)
-        params["stopLoss"] = sl_price
         params["stopLossPrice"] = sl_price
     if request.take_profit:
         tp_price = float(request.take_profit)
-        params["takeProfit"] = tp_price
         params["takeProfitPrice"] = tp_price
-    if request.stop_loss or request.take_profit:
-        params["tpslMode"] = "Full"
     if request.time_in_force == "PostOnly":
         params["timeInForce"] = "PO"
     return params

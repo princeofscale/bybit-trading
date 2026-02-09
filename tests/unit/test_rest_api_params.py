@@ -15,11 +15,8 @@ def test_build_order_params_with_sl_tp() -> None:
         take_profit=Decimal("51000"),
     )
     params = _build_order_params(req)
-    assert params["stopLoss"] == 49000.0
-    assert params["takeProfit"] == 51000.0
     assert params["stopLossPrice"] == 49000.0
     assert params["takeProfitPrice"] == 51000.0
-    assert params["tpslMode"] == "Full"
 
 
 def test_build_order_params_reduce_only_position_idx() -> None:
