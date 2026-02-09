@@ -77,6 +77,7 @@ class TradingOrchestrator(
 
         self._periodic_tasks: list[asyncio.Task[None]] = []
         self._symbols: list[str] = []
+        self._last_positions_snapshot: dict[str, object] = {}
         today = datetime.now(timezone.utc).date()
         self._last_daily_reset_date = today
         self._last_digest_date = today
@@ -128,6 +129,7 @@ class TradingOrchestrator(
             FundingRateArbStrategy(self._symbols),
         ]
         self._strategy_selector = StrategySelector(strategies)
+        self._update_positions_snapshot()
 
         self._portfolio_manager = PortfolioManager(
             strategy_names=[s.name for s in strategies],

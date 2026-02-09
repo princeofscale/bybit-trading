@@ -414,3 +414,27 @@ async def test_reduce_only_110017_goes_to_special_handler(
 
     await orch._poll_and_analyze("BTC/USDT:USDT")
     orch._handle_reduce_only_zero_position.assert_called_once()
+
+
+async def test_on_positions_refreshed_accounts_external_close(
+    settings: AppSettings,
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    orch._position_manager = MagicMock()
+    previous = Position(
+        symbol="XRP/USDT:USDT",
+        side=PositionSide.SHORT,
+        size=Decimal("100"),
+        entry_price=Decimal("1.43"),
+        mark_price=Decimal("1.44"),
+        unrealized_pnl=Decimal("-100"),
+    )
+    orch._last_positions_snapshot = {"XRP/USDT:USDT": previous}
+    orch._position_manager.get_all_positions.return_value = []
+    orch._account_closed_trade = AsyncMock()
+
+    await orch._on_positions_refreshed()
+
+    orch._account_closed_trade.assert_called_once()

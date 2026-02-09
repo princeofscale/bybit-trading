@@ -59,6 +59,7 @@ class OrchestratorLoopsMixin:
                         self._last_digest_date = now_date
                 if self._position_manager:
                     await self._position_manager.sync_positions()
+                    await self._on_positions_refreshed()
             except asyncio.CancelledError:
                 break
             except Exception as exc:

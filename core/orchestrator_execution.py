@@ -14,6 +14,49 @@ logger = structlog.get_logger("orchestrator_execution")
 
 
 class OrchestratorExecutionMixin:
+    def _update_positions_snapshot(self) -> None:
+        if not self._position_manager:
+            return
+        self._last_positions_snapshot = {
+            p.symbol: p for p in self._position_manager.get_all_positions() if p.size > 0
+        }
+
+    async def _on_positions_refreshed(self) -> None:
+        if not self._position_manager:
+            return
+        current_positions = {
+            p.symbol: p for p in self._position_manager.get_all_positions() if p.size > 0
+        }
+        previously_open = self._last_positions_snapshot
+        closed_symbols = [sym for sym in previously_open if sym not in current_positions]
+        for symbol in closed_symbols:
+            prev_pos = previously_open[symbol]
+            synthetic_signal = self._build_exchange_close_signal(prev_pos)
+            await self._account_closed_trade(
+                signal=synthetic_signal,
+                close_qty=prev_pos.size,
+                position_size=prev_pos.size,
+                entry_price=prev_pos.entry_price,
+                mark_price=prev_pos.mark_price,
+                unrealized_pnl=prev_pos.unrealized_pnl,
+            )
+        self._last_positions_snapshot = current_positions
+
+    def _build_exchange_close_signal(self, position: Position) -> Signal:
+        side = str(position.side).lower()
+        direction = (
+            SignalDirection.CLOSE_LONG
+            if side == "long"
+            else SignalDirection.CLOSE_SHORT
+        )
+        return Signal(
+            symbol=position.symbol,
+            direction=direction,
+            confidence=1.0,
+            strategy_name="exchange_close",
+            entry_price=position.mark_price or position.entry_price,
+        )
+
     def _restore_strategy_states_from_positions(self) -> None:
         if not self._strategy_selector or not self._position_manager:
             return
@@ -135,6 +178,13 @@ class OrchestratorExecutionMixin:
                 strategy=signal.strategy_name,
                 reduce_only=reduce_only,
             )
+            if self._position_manager:
+                try:
+                    await self._position_manager.sync_positions([signal.symbol])
+                    if not reduce_only:
+                        await self._on_positions_refreshed()
+                except Exception:
+                    pass
 
             await self._record_execution_quality(signal, decision.quantity, in_flight)
             self._sync_strategy_state(signal)
@@ -345,3 +395,4 @@ class OrchestratorExecutionMixin:
             mark_price=updated_position.mark_price if updated_position else previous_position.mark_price,
             unrealized_pnl=previous_position.unrealized_pnl,
         )
+        self._update_positions_snapshot()
