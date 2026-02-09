@@ -65,7 +65,7 @@ def test_add_volume_indicators(engineer: FeatureEngineer, sample_df: pd.DataFram
 def test_add_custom_features(engineer: FeatureEngineer, sample_df: pd.DataFrame) -> None:
     result = engineer.add_trend_indicators(sample_df)
     result = engineer.add_custom_features(result)
-    for col in ["price_range", "body_ratio", "returns_1", "returns_5", "volatility_10"]:
+    for col in ["price_range", "body_ratio", "returns_1", "returns_20", "realized_vol_30", "regime_flag"]:
         assert col in result.columns, f"Missing column: {col}"
 
 
@@ -90,6 +90,7 @@ def test_get_feature_columns(engineer: FeatureEngineer) -> None:
     assert "rsi_14" in cols
     assert "macd" in cols
     assert "atr_14" in cols
+    assert "funding_rate_ema_8" in cols
 
 
 def test_does_not_modify_original(engineer: FeatureEngineer, sample_df: pd.DataFrame) -> None:

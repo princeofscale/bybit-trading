@@ -19,5 +19,6 @@ htmlcov/
 *.log
 data/*.feather
 data/*.parquet
+data/*.jsonl
 models/
 .DS_Store

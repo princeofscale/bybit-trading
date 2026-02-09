@@ -121,9 +121,26 @@ class FeatureEngineer:
         df["returns_1"] = df["close"].pct_change(1)
         df["returns_5"] = df["close"].pct_change(5)
         df["returns_10"] = df["close"].pct_change(10)
+        df["returns_20"] = df["close"].pct_change(20)
+        df["returns_60"] = df["close"].pct_change(60)
 
         df["volatility_10"] = df["close"].pct_change().rolling(10).std()
         df["volatility_20"] = df["close"].pct_change().rolling(20).std()
+        df["realized_vol_30"] = df["close"].pct_change().rolling(30).std()
+        df["realized_vol_60"] = df["close"].pct_change().rolling(60).std()
+        df["trend_slope_ema50"] = df.get("ema_50", df["close"]).diff(5) / 5
+        adx_series = df["adx"] if "adx" in df.columns else pd.Series(0.0, index=df.index)
+        vol_median = df["volatility_20"].rolling(20).median()
+        df["regime_flag"] = ((adx_series >= 20) & (df["volatility_20"] >= vol_median)).astype(int)
+
+        if "funding_rate" in df.columns:
+            fr = df["funding_rate"]
+            df["funding_rate_ema_8"] = fr.ewm(span=8, adjust=False).mean()
+            fr_std = fr.rolling(24).std().replace(0, np.nan)
+            df["funding_rate_z_24"] = (fr - fr.rolling(24).mean()) / fr_std
+        else:
+            df["funding_rate_ema_8"] = 0.0
+            df["funding_rate_z_24"] = 0.0
 
         df["high_low_ratio"] = df["high"] / df["low"]
         df["close_to_ema9"] = df["close"] / df.get("ema_9", df["close"]) - 1
@@ -155,7 +172,8 @@ class FeatureEngineer:
             "obv", "vwap", "mfi_14", "adi",
             "volume_sma_20", "volume_ratio",
             "price_range", "body_ratio", "upper_shadow", "lower_shadow",
-            "returns_1", "returns_5", "returns_10",
-            "volatility_10", "volatility_20",
+            "returns_1", "returns_5", "returns_10", "returns_20", "returns_60",
+            "volatility_10", "volatility_20", "realized_vol_30", "realized_vol_60",
+            "trend_slope_ema50", "funding_rate_ema_8", "funding_rate_z_24", "regime_flag",
             "high_low_ratio", "close_to_ema9",
         ]

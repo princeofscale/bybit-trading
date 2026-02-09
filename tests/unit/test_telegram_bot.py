@@ -221,6 +221,7 @@ class TestTelegramCommand:
         assert TelegramCommand.POSITIONS == "/positions"
         assert TelegramCommand.PNL == "/pnl"
         assert TelegramCommand.CLOSE_READY == "/close_ready"
+        assert TelegramCommand.ENTRY_READY == "/entry_ready"
         assert TelegramCommand.GUARD == "/guard"
         assert TelegramCommand.PAUSE == "/pause"
         assert TelegramCommand.RESUME == "/resume"

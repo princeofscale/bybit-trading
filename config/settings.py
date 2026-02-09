@@ -86,6 +86,9 @@ class RiskSettings(BaseSettings):
     funding_arb_max_allocation: Decimal = Decimal("0.30")
     enable_directional_exposure_limit: bool = True
     max_directional_exposure_pct: Decimal = Decimal("0.60")
+    enable_side_balancer: bool = True
+    max_side_streak: int = 3
+    side_imbalance_pct: Decimal = Decimal("0.20")
 
 
 class TradingSettings(BaseSettings):
@@ -95,6 +98,21 @@ class TradingSettings(BaseSettings):
     position_mode: str = "one_way"
     default_leverage: int = 1
     use_postonly: bool = True
+    max_symbols: int = 12
+    enable_mtf_confirm: bool = True
+    mtf_confirm_tf: str = "1h"
+    mtf_confirm_min_bars: int = 120
+    mtf_confirm_adx_min: Decimal = Decimal("20")
+    close_missing_confirmations: int = 2
+    close_dedup_ttl_sec: int = 120
+    enable_exchange_close_fallback: bool = False
+    enable_short_relax_if_long_streak: bool = True
+
+
+class StatusSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="STATUS_")
+
+    use_journal_daily_agg: bool = True
 
 
 class TelegramSettings(BaseSettings):
@@ -120,6 +138,9 @@ class RiskGuardsSettings(BaseSettings):
     portfolio_heat_limit_pct: Decimal = Decimal("0.08")
     enable_directional_exposure_limit: bool = True
     max_directional_exposure_pct: Decimal = Decimal("0.60")
+    enable_side_balancer: bool = True
+    max_side_streak: int = 3
+    side_imbalance_pct: Decimal = Decimal("0.20")
     enable_max_hold_exit: bool = True
     max_hold_minutes: int = 90
     enable_pnl_pct_exit: bool = True
@@ -155,6 +176,7 @@ class AppSettings(BaseSettings):
     risk_guards: RiskGuardsSettings = Field(default_factory=RiskGuardsSettings)
     trading_stop: TradingStopSettings = Field(default_factory=TradingStopSettings)
     trading: TradingSettings = Field(default_factory=TradingSettings)
+    status: StatusSettings = Field(default_factory=StatusSettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
 
     log_level: LogLevel = LogLevel.INFO

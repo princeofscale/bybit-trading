@@ -16,11 +16,35 @@ class PositionManager:
 
     async def sync_positions(self, symbols: list[str] | None = None) -> list[Position]:
         positions = await self._rest_api.fetch_positions(symbols)
-        self._positions.clear()
+        if symbols is None:
+            self._positions.clear()
+            for pos in positions:
+                if pos.size > 0:
+                    self._positions[pos.symbol] = pos
+            await logger.ainfo("positions_synced", mode="full", count=len(self._positions))
+            return positions
+
+        requested = set(symbols)
+        seen: set[str] = set()
         for pos in positions:
+            if pos.symbol not in requested:
+                continue
+            seen.add(pos.symbol)
             if pos.size > 0:
                 self._positions[pos.symbol] = pos
-        await logger.ainfo("positions_synced", count=len(self._positions))
+            else:
+                self._positions.pop(pos.symbol, None)
+
+        missing = requested - seen
+        for symbol in missing:
+            self._positions.pop(symbol, None)
+        await logger.ainfo(
+            "positions_synced",
+            mode="partial",
+            requested=len(requested),
+            returned=len(seen),
+            count=len(self._positions),
+        )
         return positions
 
     def update_position(self, position: Position) -> None:

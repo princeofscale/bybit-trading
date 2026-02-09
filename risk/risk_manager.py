@@ -1,4 +1,5 @@
 from decimal import Decimal
+from collections import deque
 
 import structlog
 
@@ -41,6 +42,7 @@ class RiskManager:
         self.circuit_breaker = CircuitBreaker(risk_settings)
         self.exposure_manager = ExposureManager(risk_settings)
         self._symbol_cooldowns: dict[str, int] = {}
+        self._entry_side_history: deque[str] = deque(maxlen=50)
 
     def evaluate_signal(
         self,
@@ -136,6 +138,10 @@ class RiskManager:
         if not directional_check.allowed:
             return RiskDecision(approved=False, reason=directional_check.reason)
 
+        side_balance_check = self._check_side_balancer(positions, direction_side, equity)
+        if not side_balance_check.allowed:
+            return RiskDecision(approved=False, reason=side_balance_check.reason)
+
         if self._is_portfolio_heat_exceeded(positions, equity):
             return RiskDecision(approved=False, reason="portfolio_heat_limit")
 
@@ -156,6 +162,41 @@ class RiskManager:
             if symbol and self._settings.enable_symbol_cooldown:
                 ttl_ms = self._settings.symbol_cooldown_minutes * 60_000
                 self._symbol_cooldowns[symbol] = utc_now_ms() + ttl_ms
+
+    def record_entry_direction(self, direction: SignalDirection) -> None:
+        if direction == SignalDirection.LONG:
+            self._entry_side_history.append("long")
+        elif direction == SignalDirection.SHORT:
+            self._entry_side_history.append("short")
+
+    def current_side_streak(self) -> tuple[str, int]:
+        if not self._entry_side_history:
+            return "", 0
+        last = self._entry_side_history[-1]
+        streak = 0
+        for side in reversed(self._entry_side_history):
+            if side != last:
+                break
+            streak += 1
+        return last, streak
+
+    def side_balancer_snapshot(self, positions: list[Position], equity: Decimal) -> dict[str, Decimal | int | str]:
+        long_exposure, short_exposure = self.exposure_manager.directional_exposure_usd(positions)
+        side, streak = self.current_side_streak()
+        imbalance_abs = abs(long_exposure - short_exposure)
+        imbalance_pct = (imbalance_abs / equity) if equity > 0 else Decimal("0")
+        verdict = "ok"
+        if self._settings.enable_side_balancer and side and streak >= self._settings.max_side_streak:
+            if imbalance_pct >= self._settings.side_imbalance_pct:
+                verdict = f"guard_active_{side}"
+        return {
+            "streak_side": side or "none",
+            "streak_count": streak,
+            "long_exposure": long_exposure,
+            "short_exposure": short_exposure,
+            "imbalance_pct": imbalance_pct,
+            "verdict": verdict,
+        }
 
     def update_equity(self, equity: Decimal) -> bool:
         return self.drawdown_monitor.update_equity(equity)
@@ -207,3 +248,28 @@ class RiskManager:
             return False
         heat = self.exposure_manager.total_portfolio_risk_pct(positions, equity)
         return heat >= self._settings.portfolio_heat_limit_pct
+
+    def _check_side_balancer(
+        self,
+        positions: list[Position],
+        new_direction: PositionSide,
+        equity: Decimal,
+    ) -> ExposureCheck:
+        if not self._settings.enable_side_balancer:
+            return ExposureCheck(True)
+        if equity <= 0:
+            return ExposureCheck(False, "invalid_equity")
+        last_side, streak = self.current_side_streak()
+        if streak < self._settings.max_side_streak:
+            return ExposureCheck(True)
+        if not last_side:
+            return ExposureCheck(True)
+        long_exposure, short_exposure = self.exposure_manager.directional_exposure_usd(positions)
+        imbalance_pct = abs(long_exposure - short_exposure) / equity
+        if imbalance_pct < self._settings.side_imbalance_pct:
+            return ExposureCheck(True)
+        if last_side == "long" and new_direction == PositionSide.LONG:
+            return ExposureCheck(False, "side_balancer_long")
+        if last_side == "short" and new_direction == PositionSide.SHORT:
+            return ExposureCheck(False, "side_balancer_short")
+        return ExposureCheck(True)

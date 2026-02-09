@@ -107,3 +107,31 @@ async def test_set_leverage(position_manager: PositionManager, mock_rest_api: As
     pos = position_manager.get_position("BTC/USDT:USDT")
     assert pos is not None
     assert pos.leverage == Decimal("5")
+
+
+async def test_partial_sync_does_not_drop_other_symbols(position_manager: PositionManager, mock_rest_api: AsyncMock) -> None:
+    await position_manager.sync_positions()
+    mock_rest_api.fetch_positions.return_value = [
+        Position(
+            symbol="BTC/USDT:USDT",
+            side=PositionSide.LONG,
+            size=Decimal("0.2"),
+            entry_price=Decimal("30100"),
+        )
+    ]
+    await position_manager.sync_positions(["BTC/USDT:USDT"])
+    assert position_manager.has_position("ETH/USDT:USDT") is True
+    btc = position_manager.get_position("BTC/USDT:USDT")
+    assert btc is not None
+    assert btc.size == Decimal("0.2")
+
+
+async def test_partial_sync_removes_only_requested_missing_symbol(
+    position_manager: PositionManager,
+    mock_rest_api: AsyncMock,
+) -> None:
+    await position_manager.sync_positions()
+    mock_rest_api.fetch_positions.return_value = []
+    await position_manager.sync_positions(["BTC/USDT:USDT"])
+    assert position_manager.has_position("BTC/USDT:USDT") is False
+    assert position_manager.has_position("ETH/USDT:USDT") is True

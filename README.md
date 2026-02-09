@@ -131,9 +131,10 @@ python scripts/optimize_strategy.py [data_file] [n_trials]
 - Риск-алерты (просадка, circuit breaker)
 - Статус бота по команде `/status`
 
-Команды: `/status`, `/positions`, `/pnl`, `/close_ready`, `/guard`, `/pause`, `/resume`, `/risk`, `/help`
+Команды: `/status`, `/positions`, `/pnl`, `/close_ready`, `/entry_ready`, `/guard`, `/pause`, `/resume`, `/risk`, `/help`
 
 `/close_ready <symbol>` показывает диагностику, почему символ сейчас не закрывается (или готов к закрытию).
+`/entry_ready <symbol>` показывает диагностику входа: стратегия, confidence, MTF confirm, risk verdict.
 
 ## Риск-менеджмент (конфигурируемые guards)
 
@@ -160,6 +161,9 @@ python scripts/optimize_strategy.py [data_file] [n_trials]
 - `RISK_GUARD_PORTFOLIO_HEAT_LIMIT_PCT`
 - `RISK_GUARD_ENABLE_DIRECTIONAL_EXPOSURE_LIMIT`
 - `RISK_GUARD_MAX_DIRECTIONAL_EXPOSURE_PCT`
+- `RISK_GUARD_ENABLE_SIDE_BALANCER`
+- `RISK_GUARD_MAX_SIDE_STREAK`
+- `RISK_GUARD_SIDE_IMBALANCE_PCT`
 - `RISK_GUARD_ENABLE_MAX_HOLD_EXIT`
 - `RISK_GUARD_MAX_HOLD_MINUTES`
 - `RISK_GUARD_ENABLE_PNL_PCT_EXIT`
@@ -170,6 +174,16 @@ python scripts/optimize_strategy.py [data_file] [n_trials]
 - `TRADING_STOP_RETRY_MAX_ATTEMPTS`
 - `TRADING_STOP_RETRY_INTERVAL_SEC`
 - `TRADING_STOP_CONFIRM_TIMEOUT_SEC`
+- `TRADING_MAX_SYMBOLS`
+- `TRADING_ENABLE_MTF_CONFIRM`
+- `TRADING_MTF_CONFIRM_TF`
+- `TRADING_MTF_CONFIRM_MIN_BARS`
+- `TRADING_MTF_CONFIRM_ADX_MIN`
+- `TRADING_CLOSE_MISSING_CONFIRMATIONS`
+- `TRADING_CLOSE_DEDUP_TTL_SEC`
+- `TRADING_ENABLE_EXCHANGE_CLOSE_FALLBACK`
+- `TRADING_ENABLE_SHORT_RELAX_IF_LONG_STREAK`
+- `STATUS_USE_JOURNAL_DAILY_AGG`
 
 ## Операционный регламент
 

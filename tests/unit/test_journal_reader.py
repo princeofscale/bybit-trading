@@ -184,3 +184,20 @@ async def test_get_equity_snapshots_ordered(populated_journal: tuple[Path, str])
     assert snapshots[0].total_equity == 100000.0
 
     await reader.close()
+
+
+async def test_daily_aggregate_methods(populated_journal: tuple[Path, str]) -> None:
+    db_path, _ = populated_journal
+    reader = JournalReader(db_path)
+    await reader.initialize()
+
+    start = datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2024, 1, 2, 0, 0, tzinfo=timezone.utc)
+    assert await reader.count_signals_since(start, end) == 2
+    assert await reader.count_trades_since(start, end) == 2
+    assert await reader.sum_realized_pnl_since(start, end) == Decimal("150")
+
+    snap = await reader.latest_equity_snapshot()
+    assert snap is not None
+    assert snap.total_equity == 100000.0
+    await reader.close()

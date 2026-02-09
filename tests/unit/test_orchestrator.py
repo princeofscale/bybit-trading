@@ -17,7 +17,9 @@ from strategies.base_strategy import Signal, SignalDirection, StrategyState
 
 @pytest.fixture
 def settings() -> AppSettings:
-    return AppSettings(_env_file=None)
+    s = AppSettings(_env_file=None)
+    s.trading.enable_mtf_confirm = False
+    return s
 
 
 async def test_session_id_generated(settings: AppSettings, tmp_path: Path) -> None:
@@ -74,6 +76,7 @@ async def test_cmd_help_returns_commands(settings: AppSettings, tmp_path: Path) 
     assert "/positions" in result
     assert "/pnl" in result
     assert "/guard" in result
+    assert "/entry_ready" in result
     assert "Команды бота" in result
 
 
@@ -584,6 +587,96 @@ async def test_on_positions_refreshed_accounts_external_close(
     orch._position_manager.get_all_positions.return_value = []
     orch._account_closed_trade = AsyncMock()
 
-    await orch._on_positions_refreshed()
+    await orch._on_positions_refreshed(observed_symbols={"XRP/USDT:USDT"})
+    assert orch._account_closed_trade.call_count == 0
 
+    await orch._on_positions_refreshed(observed_symbols={"XRP/USDT:USDT"})
+    assert orch._account_closed_trade.call_count == 0
+
+
+async def test_on_positions_refreshed_exchange_fallback_when_enabled(
+    settings: AppSettings,
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    orch._settings.trading.enable_exchange_close_fallback = True
+    orch._position_manager = MagicMock()
+    previous = Position(
+        symbol="XRP/USDT:USDT",
+        side=PositionSide.SHORT,
+        size=Decimal("100"),
+        entry_price=Decimal("1.43"),
+        mark_price=Decimal("1.44"),
+        unrealized_pnl=Decimal("-100"),
+    )
+    orch._last_positions_snapshot = {"XRP/USDT:USDT": previous}
+    orch._position_manager.get_all_positions.return_value = []
+    orch._account_closed_trade = AsyncMock()
+
+    await orch._on_positions_refreshed(
+        observed_symbols={"XRP/USDT:USDT"},
+        allow_exchange_fallback=True,
+    )
+    assert orch._account_closed_trade.call_count == 0
+
+    await orch._on_positions_refreshed(
+        observed_symbols={"XRP/USDT:USDT"},
+        allow_exchange_fallback=True,
+    )
     orch._account_closed_trade.assert_called_once()
+
+
+async def test_on_positions_refreshed_deduplicates_external_close(
+    settings: AppSettings,
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    orch._position_manager = MagicMock()
+    orch._settings.trading.close_missing_confirmations = 1
+    orch._settings.trading.close_dedup_ttl_sec = 120
+    orch._settings.trading.enable_exchange_close_fallback = True
+    previous = Position(
+        symbol="ETH/USDT:USDT",
+        side=PositionSide.LONG,
+        size=Decimal("5"),
+        entry_price=Decimal("2000"),
+        mark_price=Decimal("1990"),
+        unrealized_pnl=Decimal("-20"),
+    )
+    orch._last_positions_snapshot = {"ETH/USDT:USDT": previous}
+    orch._position_manager.get_all_positions.return_value = []
+    orch._account_closed_trade = AsyncMock()
+
+    await orch._on_positions_refreshed(
+        observed_symbols={"ETH/USDT:USDT"},
+        allow_exchange_fallback=True,
+    )
+    assert orch._account_closed_trade.call_count == 1
+    orch._last_positions_snapshot = {"ETH/USDT:USDT": previous}
+    await orch._on_positions_refreshed(
+        observed_symbols={"ETH/USDT:USDT"},
+        allow_exchange_fallback=True,
+    )
+    assert orch._account_closed_trade.call_count == 1
+
+
+async def test_cmd_entry_ready_reports_not_ready_without_signal(
+    settings: AppSettings,
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    orch._symbols = ["BTC/USDT:USDT"]
+    orch._rest_api = AsyncMock()
+    orch._rest_api.fetch_ohlcv = AsyncMock(return_value=[{"a": 1}])
+    orch._preprocessor = MagicMock()
+    orch._preprocessor.candles_to_dataframe.return_value = MagicMock()
+    orch._feature_engineer = MagicMock()
+    orch._feature_engineer.build_features.return_value = MagicMock()
+    orch._strategy_selector = MagicMock()
+    orch._strategy_selector.get_best_signal.return_value = None
+
+    text = await orch._cmd_entry_ready(["BTC/USDT:USDT"])
+    assert "NOT READY" in text

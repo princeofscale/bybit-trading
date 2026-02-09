@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections import deque
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -23,16 +24,44 @@ class OrchestratorExecutionMixin:
             p.symbol: p for p in self._position_manager.get_all_positions() if p.size > 0
         }
 
-    async def _on_positions_refreshed(self) -> None:
+    async def _on_positions_refreshed(
+        self,
+        observed_symbols: set[str] | None = None,
+        allow_exchange_fallback: bool = False,
+    ) -> None:
         if not self._position_manager:
             return
+        self._prune_recent_external_closes()
         current_positions = {
             p.symbol: p for p in self._position_manager.get_all_positions() if p.size > 0
         }
         previously_open = self._last_positions_snapshot
+        next_snapshot = dict(current_positions)
         closed_symbols = [sym for sym in previously_open if sym not in current_positions]
         for symbol in closed_symbols:
             prev_pos = previously_open[symbol]
+            if observed_symbols is not None and symbol not in observed_symbols:
+                next_snapshot[symbol] = prev_pos
+                continue
+            if not allow_exchange_fallback:
+                self._position_first_seen_ms.pop(symbol, None)
+                self._position_peak_pnl.pop(symbol, None)
+                self._pending_trading_stops.pop(symbol, None)
+                self._trading_stop_last_status.pop(symbol, None)
+                self._missing_position_counts.pop(symbol, None)
+                continue
+            misses = self._missing_position_counts.get(symbol, 0) + 1
+            self._missing_position_counts[symbol] = misses
+            if misses < max(1, self._settings.trading.close_missing_confirmations):
+                next_snapshot[symbol] = prev_pos
+                continue
+            dedup_key = self._build_external_close_key(prev_pos)
+            now_ms = utc_now_ms()
+            last_sent = self._recent_external_closes.get(dedup_key, 0)
+            if now_ms - last_sent < self._settings.trading.close_dedup_ttl_sec * 1000:
+                continue
+            self._recent_external_closes[dedup_key] = now_ms
+            await logger.ainfo("close_event_source", symbol=symbol, source="exchange_fallback")
             synthetic_signal = self._build_exchange_close_signal(prev_pos)
             await self._account_closed_trade(
                 signal=synthetic_signal,
@@ -46,12 +75,14 @@ class OrchestratorExecutionMixin:
             self._position_peak_pnl.pop(symbol, None)
             self._pending_trading_stops.pop(symbol, None)
             self._trading_stop_last_status.pop(symbol, None)
+            self._missing_position_counts.pop(symbol, None)
         now_ms = utc_now_ms()
         for symbol, position in current_positions.items():
+            self._missing_position_counts.pop(symbol, None)
             self._position_first_seen_ms.setdefault(symbol, now_ms)
             peak = self._position_peak_pnl.get(symbol, position.unrealized_pnl)
             self._position_peak_pnl[symbol] = max(peak, position.unrealized_pnl)
-        self._last_positions_snapshot = current_positions
+        self._last_positions_snapshot = next_snapshot
 
     def _build_exchange_close_signal(self, position: Position) -> Signal:
         side = str(position.side).lower()
@@ -67,6 +98,35 @@ class OrchestratorExecutionMixin:
             strategy_name="exchange_close",
             entry_price=position.mark_price or position.entry_price,
         )
+
+    def _build_external_close_key(self, position: Position) -> str:
+        ttl_bucket = max(1, self._settings.trading.close_dedup_ttl_sec)
+        bucket = utc_now_ms() // (ttl_bucket * 1000)
+        side = str(position.side).lower()
+        entry = f"{position.entry_price:.4f}" if position.entry_price is not None else "0"
+        size = f"{position.size:.6f}" if position.size is not None else "0"
+        return f"{position.symbol}|{side}|{entry}|{size}|{bucket}"
+
+    def _prune_recent_external_closes(self) -> None:
+        if not self._recent_external_closes:
+            return
+        ttl_ms = max(1, self._settings.trading.close_dedup_ttl_sec) * 1000
+        now_ms = utc_now_ms()
+        stale = [key for key, ts in self._recent_external_closes.items() if now_ms - ts > ttl_ms]
+        for key in stale:
+            self._recent_external_closes.pop(key, None)
+
+    async def _sync_positions_and_reconcile(self, symbols: list[str] | None = None) -> None:
+        if not self._position_manager:
+            return
+        observed = set(symbols) if symbols else None
+        is_full_sync = symbols is None
+        allow_exchange_fallback = (
+            is_full_sync and self._settings.trading.enable_exchange_close_fallback
+        )
+        async with self._positions_refresh_lock:
+            await self._position_manager.sync_positions(symbols)
+            await self._on_positions_refreshed(observed, allow_exchange_fallback=allow_exchange_fallback)
 
     def _restore_strategy_states_from_positions(self) -> None:
         if not self._strategy_selector or not self._position_manager:
@@ -101,8 +161,7 @@ class OrchestratorExecutionMixin:
             return
         if self._position_manager:
             try:
-                await self._position_manager.sync_positions([symbol])
-                await self._on_positions_refreshed()
+                await self._sync_positions_and_reconcile([symbol])
             except Exception:
                 pass
             position = self._position_manager.get_position(symbol)
@@ -128,6 +187,26 @@ class OrchestratorExecutionMixin:
 
         signal = self._strategy_selector.get_best_signal(symbol, df)
         if not signal:
+            return
+
+        mtf_ok, mtf_reason, mtf_meta = await self._evaluate_mtf_confirm(signal)
+        if not mtf_ok:
+            await logger.ainfo("signal_rejected_mtf", symbol=symbol, reason=mtf_reason, **mtf_meta)
+            if self._journal:
+                await self._journal.log_signal(
+                    timestamp=datetime.now(timezone.utc),
+                    symbol=signal.symbol,
+                    direction=signal.direction.value,
+                    confidence=signal.confidence,
+                    strategy_name=signal.strategy_name,
+                    entry_price=signal.entry_price,
+                    stop_loss=signal.stop_loss,
+                    take_profit=signal.take_profit,
+                    approved=False,
+                    rejection_reason=mtf_reason,
+                    session_id=self._session_id,
+                )
+            await self._record_ml_candidate(signal, approved=False, rejection_reason=mtf_reason, features=mtf_meta)
             return
 
         self._signals_count += 1
@@ -157,6 +236,12 @@ class OrchestratorExecutionMixin:
                 rejection_reason=decision.reason if not decision.approved else "",
                 session_id=self._session_id,
             )
+        await self._record_ml_candidate(
+            signal,
+            approved=decision.approved,
+            rejection_reason="" if decision.approved else (decision.reason or ""),
+            features=mtf_meta,
+        )
 
         if not decision.approved:
             await logger.ainfo("signal_rejected", symbol=signal.symbol, reason=decision.reason)
@@ -166,7 +251,7 @@ class OrchestratorExecutionMixin:
         reduce_only = signal.direction in (SignalDirection.CLOSE_LONG, SignalDirection.CLOSE_SHORT)
         existing_position = self._position_manager.get_position(signal.symbol) if self._position_manager else None
         if reduce_only and self._position_manager:
-            await self._position_manager.sync_positions([signal.symbol])
+            await self._sync_positions_and_reconcile([signal.symbol])
             existing_position = self._position_manager.get_position(signal.symbol)
             positions = self._position_manager.get_all_positions()
             decision = self._risk_manager.evaluate_signal(signal, equity, positions)
@@ -203,9 +288,7 @@ class OrchestratorExecutionMixin:
             )
             if self._position_manager:
                 try:
-                    await self._position_manager.sync_positions([signal.symbol])
-                    if not reduce_only:
-                        await self._on_positions_refreshed()
+                    await self._sync_positions_and_reconcile([signal.symbol])
                 except Exception:
                     pass
 
@@ -219,6 +302,8 @@ class OrchestratorExecutionMixin:
 
             await self._record_execution_quality(signal, decision.quantity, in_flight)
             self._sync_strategy_state(signal)
+            if not reduce_only and self._risk_manager:
+                self._risk_manager.record_entry_direction(signal.direction)
 
             if reduce_only and existing_position:
                 await self._finalize_close_after_submit(
@@ -431,6 +516,85 @@ class OrchestratorExecutionMixin:
         out["funding_rate"] = values
         return out
 
+    async def _evaluate_mtf_confirm(self, signal: Signal) -> tuple[bool, str, dict[str, float]]:
+        if signal.direction not in (SignalDirection.LONG, SignalDirection.SHORT):
+            return True, "", {}
+        if not self._settings.trading.enable_mtf_confirm:
+            return True, "", {}
+        if not self._rest_api or not self._preprocessor or not self._feature_engineer:
+            return False, "mtf_components_unavailable", {}
+
+        bars = max(80, int(self._settings.trading.mtf_confirm_min_bars))
+        candles = await self._rest_api.fetch_ohlcv(
+            signal.symbol,
+            timeframe=self._settings.trading.mtf_confirm_tf,
+            limit=bars,
+        )
+        if not candles or len(candles) < bars:
+            return False, "mtf_confirm_insufficient_data", {}
+
+        df_mtf = self._preprocessor.candles_to_dataframe(candles)
+        await self._refresh_funding_rate(signal.symbol)
+        df_mtf = self._apply_funding_rate_column(signal.symbol, df_mtf)
+        df_mtf = self._feature_engineer.build_features(df_mtf)
+        if df_mtf.empty:
+            return False, "mtf_confirm_empty_frame", {}
+
+        last = df_mtf.iloc[-1]
+        ema50 = float(last.get("ema_50", 0.0))
+        ema200 = float(last.get("sma_200", 0.0))
+        adx_val = float(last.get("adx", 0.0))
+        adx_min = float(self._settings.trading.mtf_confirm_adx_min)
+        if (
+            signal.direction == SignalDirection.SHORT
+            and self._settings.trading.enable_short_relax_if_long_streak
+            and self._risk_manager
+        ):
+            streak_side, streak_count = self._risk_manager.current_side_streak()
+            if streak_side == "long" and streak_count >= self._settings.risk_guards.max_side_streak:
+                adx_min = max(10.0, adx_min * 0.8)
+        meta = {"mtf_ema50": ema50, "mtf_ema200": ema200, "mtf_adx": adx_val}
+
+        trend_ok = ema50 > ema200 if signal.direction == SignalDirection.LONG else ema50 < ema200
+        if not trend_ok:
+            return False, "mtf_confirm_failed", meta
+        if adx_val < adx_min:
+            return False, "mtf_confirm_failed", meta
+        return True, "", meta
+
+    async def _record_ml_candidate(
+        self,
+        signal: Signal,
+        approved: bool,
+        rejection_reason: str,
+        features: dict[str, float] | None = None,
+    ) -> None:
+        payload = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "session_id": self._session_id,
+            "symbol": signal.symbol,
+            "direction": signal.direction.value,
+            "strategy": signal.strategy_name,
+            "confidence": signal.confidence,
+            "entry_price": str(signal.entry_price or Decimal("0")),
+            "stop_loss": str(signal.stop_loss or Decimal("0")),
+            "take_profit": str(signal.take_profit or Decimal("0")),
+            "approved": approved,
+            "rejection_reason": rejection_reason,
+            "label": None,
+        }
+        if features:
+            payload["features"] = features
+
+        target = self._settings.data_dir / "ml_candidates.jsonl"
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        def _append() -> None:
+            with target.open("a", encoding="utf-8") as fp:
+                fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+        await asyncio.to_thread(_append)
+
     async def _enforce_position_exit_guards(self, position: Position) -> bool:
         equity = self._account_manager.equity if self._account_manager else Decimal("0")
         reason = self._position_exit_reason(position, equity)
@@ -539,7 +703,7 @@ class OrchestratorExecutionMixin:
     async def _handle_reduce_only_zero_position(self, signal: Signal) -> None:
         if not self._position_manager:
             return
-        await self._position_manager.sync_positions([signal.symbol])
+        await self._sync_positions_and_reconcile([signal.symbol])
         current_position = self._position_manager.get_position(signal.symbol)
         if not current_position or current_position.size <= 0:
             self._sync_strategy_state(
@@ -685,7 +849,7 @@ class OrchestratorExecutionMixin:
         prev_size = previous_position.size
         updated_position = None
         for _ in range(3):
-            await self._position_manager.sync_positions([signal.symbol])
+            await self._sync_positions_and_reconcile([signal.symbol])
             updated_position = self._position_manager.get_position(signal.symbol)
             new_size = updated_position.size if updated_position else Decimal("0")
             if new_size < prev_size:
@@ -710,4 +874,6 @@ class OrchestratorExecutionMixin:
             mark_price=updated_position.mark_price if updated_position else previous_position.mark_price,
             unrealized_pnl=previous_position.unrealized_pnl,
         )
+        await logger.ainfo("close_event_source", symbol=signal.symbol, source="size_delta")
+        self._missing_position_counts.pop(signal.symbol, None)
         self._update_positions_snapshot()

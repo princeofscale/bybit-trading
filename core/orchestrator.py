@@ -22,6 +22,7 @@ from exchange.order_manager import OrderManager
 from exchange.position_manager import PositionManager
 from exchange.rate_limiter import RateLimiter
 from exchange.rest_api import RestApi
+from journal.reader import JournalReader
 from journal.writer import JournalWriter
 from monitoring.metrics import MetricsRegistry
 from monitoring.telegram_bot import TelegramAlertSink
@@ -62,6 +63,7 @@ class TradingOrchestrator(
 
         self._event_bus: EventBus | None = None
         self._journal: JournalWriter | None = None
+        self._journal_reader: JournalReader | None = None
         self._client: BybitClient | None = None
         self._rest_api: RestApi | None = None
         self._order_manager: OrderManager | None = None
@@ -79,6 +81,10 @@ class TradingOrchestrator(
         self._periodic_tasks: list[asyncio.Task[None]] = []
         self._symbols: list[str] = []
         self._last_positions_snapshot: dict[str, object] = {}
+        self._positions_refresh_lock = asyncio.Lock()
+        self._missing_position_counts: dict[str, int] = {}
+        self._recent_external_closes: dict[str, int] = {}
+        self._daily_stats_cache: tuple[datetime, dict[str, Decimal | int]] | None = None
         self._position_first_seen_ms: dict[str, int] = {}
         self._position_peak_pnl: dict[str, Decimal] = {}
         self._funding_rate_history: dict[str, deque[float]] = {}
@@ -95,6 +101,8 @@ class TradingOrchestrator(
 
         self._journal = JournalWriter(self._journal_path)
         await self._journal.initialize()
+        self._journal_reader = JournalReader(self._journal_path)
+        await self._journal_reader.initialize()
 
         self._client = BybitClient(self._settings.exchange)
         await self._client.connect()
@@ -122,7 +130,8 @@ class TradingOrchestrator(
         except Exception as exc:
             await logger.awarning("positions_sync_failed", error=str(exc))
 
-        self._symbols = get_ccxt_symbols()[:5]
+        max_symbols = max(1, int(self._settings.trading.max_symbols))
+        self._symbols = get_ccxt_symbols()[:max_symbols]
         recovered_symbols = [p.symbol for p in self._position_manager.get_all_positions() if p.size > 0]
         for symbol in recovered_symbols:
             if symbol not in self._symbols:
@@ -187,6 +196,9 @@ class TradingOrchestrator(
                 "portfolio_heat_limit_pct": guards.portfolio_heat_limit_pct,
                 "enable_directional_exposure_limit": guards.enable_directional_exposure_limit,
                 "max_directional_exposure_pct": guards.max_directional_exposure_pct,
+                "enable_side_balancer": guards.enable_side_balancer,
+                "max_side_streak": guards.max_side_streak,
+                "side_imbalance_pct": guards.side_imbalance_pct,
             }
         )
         return RiskSettings(**risk_params)
@@ -208,6 +220,7 @@ class TradingOrchestrator(
         self._telegram_sink.register_command("/positions", self._cmd_positions)
         self._telegram_sink.register_command("/pnl", self._cmd_pnl)
         self._telegram_sink.register_command("/close_ready", self._cmd_close_ready)
+        self._telegram_sink.register_command("/entry_ready", self._cmd_entry_ready)
         self._telegram_sink.register_command("/guard", self._cmd_guard)
         self._telegram_sink.register_command("/pause", self._cmd_pause)
         self._telegram_sink.register_command("/resume", self._cmd_resume)
@@ -256,6 +269,8 @@ class TradingOrchestrator(
 
         if self._journal:
             await self._journal.close()
+        if getattr(self, "_journal_reader", None):
+            await self._journal_reader.close()
 
         await logger.ainfo("orchestrator_stopped")
 

@@ -315,3 +315,46 @@ class TestDirectionalExposure:
         )
         decision = rm.evaluate_signal(signal, Decimal("10000"), [long_pos])
         assert decision.approved is True
+
+
+class TestSideBalancer:
+    def test_blocks_repeated_long_when_imbalanced(self, rm: RiskManager) -> None:
+        rm._settings.enable_side_balancer = True
+        rm._settings.max_side_streak = 3
+        rm._settings.side_imbalance_pct = Decimal("0.20")
+        rm._settings.portfolio_heat_limit_pct = Decimal("2.0")
+        rm.record_entry_direction(SignalDirection.LONG)
+        rm.record_entry_direction(SignalDirection.LONG)
+        rm.record_entry_direction(SignalDirection.LONG)
+        long_pos = Position(
+            symbol="ETHUSDT",
+            side=PositionSide.LONG,
+            size=Decimal("0.2"),
+            entry_price=Decimal("15000"),
+        )
+        decision = rm.evaluate_signal(_make_signal(SignalDirection.LONG), Decimal("10000"), [long_pos])
+        assert decision.approved is False
+        assert decision.reason == "side_balancer_long"
+
+    def test_allows_opposite_side_for_rebalance(self, rm: RiskManager) -> None:
+        rm._settings.enable_side_balancer = True
+        rm._settings.max_side_streak = 3
+        rm._settings.side_imbalance_pct = Decimal("0.20")
+        rm._settings.portfolio_heat_limit_pct = Decimal("2.0")
+        rm.record_entry_direction(SignalDirection.LONG)
+        rm.record_entry_direction(SignalDirection.LONG)
+        rm.record_entry_direction(SignalDirection.LONG)
+        long_pos = Position(
+            symbol="ETHUSDT",
+            side=PositionSide.LONG,
+            size=Decimal("0.2"),
+            entry_price=Decimal("15000"),
+        )
+        signal = _make_signal(
+            direction=SignalDirection.SHORT,
+            entry=Decimal("100"),
+            stop=Decimal("105"),
+            tp=Decimal("90"),
+        )
+        decision = rm.evaluate_signal(signal, Decimal("10000"), [long_pos])
+        assert decision.approved is True
