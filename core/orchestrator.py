@@ -333,20 +333,23 @@ class TradingOrchestrator:
                 )
 
     async def _balance_poll_loop(self) -> None:
+        was_halted = False
         while True:
             try:
                 await asyncio.sleep(120)
                 if self._account_manager and self._risk_manager:
                     balance = await self._account_manager.sync_balance()
-                    halt = self._risk_manager.update_equity(balance.total_equity)
-                    if halt:
+                    self._risk_manager.update_equity(balance.total_equity)
+                    is_halted = self._risk_manager.drawdown_monitor.is_halted
+                    if is_halted and not was_halted:
                         self._trading_paused = True
+                        was_halted = True
                         await logger.awarning("trading_halted_drawdown")
                         if self._telegram_sink:
                             dd = self._account_manager.current_drawdown_pct
                             await self._telegram_sink.send_message_now(
                                 TelegramFormatter.format_risk_alert(
-                                    reason="Max drawdown exceeded",
+                                    reason=self._risk_manager.drawdown_monitor.halt_reason,
                                     current_drawdown=dd,
                                     max_drawdown=self._risk_manager._settings.max_drawdown_pct,
                                 )
