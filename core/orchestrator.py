@@ -98,8 +98,11 @@ class TradingOrchestrator:
         self._risk_manager.initialize(balance.total_equity)
         await logger.ainfo("balance_synced", equity=str(balance.total_equity), available=str(balance.total_available_balance))
 
-        await self._position_manager.sync_positions()
-        await logger.ainfo("positions_synced", count=self._position_manager.open_position_count)
+        try:
+            await self._position_manager.sync_positions()
+            await logger.ainfo("positions_synced", count=self._position_manager.open_position_count)
+        except Exception as exc:
+            await logger.awarning("positions_sync_failed", error=str(exc))
 
         self._symbols = get_ccxt_symbols()[:5]
         strategies = [

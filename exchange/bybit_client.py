@@ -43,11 +43,8 @@ class BybitClient:
         self._exchange = ccxt.bybit(config)
 
         if self._settings.demo_trading:
-            markets = await self._exchange.fetch_markets()
-            self._exchange.markets = self._exchange.index_by(markets, 'symbol')
-            self._exchange.markets_by_id = self._exchange.index_by(markets, 'id')
-        else:
-            await self._exchange.load_markets()
+            self._exchange.has['fetchCurrencies'] = False
+        await self._exchange.load_markets()
 
         await logger.ainfo(
             "exchange_connected",
