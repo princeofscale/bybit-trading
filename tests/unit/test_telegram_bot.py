@@ -1,6 +1,6 @@
 from decimal import Decimal
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -167,6 +167,33 @@ class TestTelegramAlertSink:
     async def test_poll_no_token_does_nothing(self) -> None:
         s = TelegramAlertSink(bot_token="", chat_id="123")
         await s.poll_and_handle()
+
+    async def test_poll_passes_args_to_handler(self, sink: TelegramAlertSink) -> None:
+        sink._http_client = AsyncMock()
+        sink._http_client.get = AsyncMock(return_value=MagicMock(
+            json=lambda: {
+                "ok": True,
+                "result": [
+                    {
+                        "update_id": 1,
+                        "message": {
+                            "text": "/close_ready BTC/USDT:USDT",
+                            "chat": {"id": 123},
+                        },
+                    }
+                ],
+            },
+            raise_for_status=lambda: None,
+        ))
+        sink._http_client.post = AsyncMock(return_value=MagicMock())
+
+        async def _handler(args: list[str]) -> str:
+            return f"args={','.join(args)}"
+
+        sink.register_command("/close_ready", _handler)
+        await sink.poll_and_handle()
+        sent_payload = sink._http_client.post.call_args.kwargs["json"]
+        assert "BTC/USDT:USDT" in sent_payload["text"]
 
 
 class TestTelegramCommand:

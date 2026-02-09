@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 from time import monotonic
@@ -5,7 +6,7 @@ from time import monotonic
 import structlog
 
 from data.models import OrderSide, OrderType
-from exchange.models import InFlightOrder, OrderRequest
+from exchange.models import InFlightOrder, OrderRequest, Position
 from monitoring.telegram_bot import TelegramFormatter
 from strategies.base_strategy import Signal, SignalDirection, StrategyState
 
@@ -98,6 +99,14 @@ class OrchestratorExecutionMixin:
         order_side = self._resolve_order_side(signal.direction)
         reduce_only = signal.direction in (SignalDirection.CLOSE_LONG, SignalDirection.CLOSE_SHORT)
         existing_position = self._position_manager.get_position(signal.symbol) if self._position_manager else None
+        if reduce_only and self._position_manager:
+            await self._position_manager.sync_positions([signal.symbol])
+            existing_position = self._position_manager.get_position(signal.symbol)
+            positions = self._position_manager.get_all_positions()
+            decision = self._risk_manager.evaluate_signal(signal, equity, positions)
+            if not decision.approved:
+                await logger.ainfo("close_signal_rejected_after_resync", symbol=signal.symbol, reason=decision.reason)
+                return
 
         request = OrderRequest(
             symbol=signal.symbol,
@@ -106,6 +115,7 @@ class OrchestratorExecutionMixin:
             quantity=decision.quantity,
             stop_loss=None if reduce_only else decision.stop_loss,
             take_profit=None if reduce_only else decision.take_profit,
+            position_idx=existing_position.position_idx if (reduce_only and existing_position) else 0,
             reduce_only=reduce_only,
         )
 
@@ -130,13 +140,10 @@ class OrchestratorExecutionMixin:
             self._sync_strategy_state(signal)
 
             if reduce_only and existing_position:
-                await self._account_closed_trade(
+                await self._finalize_close_after_submit(
                     signal=signal,
-                    close_qty=decision.quantity,
-                    position_size=existing_position.size,
-                    entry_price=existing_position.entry_price,
-                    mark_price=existing_position.mark_price,
-                    unrealized_pnl=existing_position.unrealized_pnl,
+                    expected_close_qty=decision.quantity,
+                    previous_position=existing_position,
                 )
 
             if self._telegram_sink and not reduce_only:
@@ -153,6 +160,9 @@ class OrchestratorExecutionMixin:
                 )
         except Exception as exc:
             self._metrics.counter("missed_fills").increment()
+            if reduce_only and "110017" in str(exc):
+                await self._handle_reduce_only_zero_position(signal)
+                return
             await logger.aerror("order_failed", symbol=signal.symbol, error=str(exc))
             if self._telegram_sink:
                 await self._telegram_sink.send_message_now(
@@ -160,6 +170,42 @@ class OrchestratorExecutionMixin:
                     f"Symbol: `{signal.symbol}`\n"
                     f"Error: `{str(exc)[:200]}`"
                 )
+
+    async def _handle_reduce_only_zero_position(self, signal: Signal) -> None:
+        if not self._position_manager:
+            return
+        await self._position_manager.sync_positions([signal.symbol])
+        current_position = self._position_manager.get_position(signal.symbol)
+        if not current_position or current_position.size <= 0:
+            self._sync_strategy_state(
+                Signal(
+                    symbol=signal.symbol,
+                    direction=SignalDirection.CLOSE_LONG if signal.direction == SignalDirection.CLOSE_LONG else SignalDirection.CLOSE_SHORT,
+                    confidence=signal.confidence,
+                    strategy_name=signal.strategy_name,
+                ),
+            )
+            await logger.awarning("reduce_only_no_position_after_resync", symbol=signal.symbol)
+            if self._telegram_sink:
+                await self._telegram_sink.send_message_now(
+                    f"ℹ️ *Close Sync*\\n"
+                    f"Символ: `{signal.symbol}`\\n"
+                    f"Позиция уже отсутствует на бирже. Состояние синхронизировано."
+                )
+            return
+        await logger.aerror(
+            "reduce_only_failed_position_exists",
+            symbol=signal.symbol,
+            size=str(current_position.size),
+            position_idx=current_position.position_idx,
+        )
+        if self._telegram_sink:
+            await self._telegram_sink.send_message_now(
+                f"🔴 *Order Failed*\\n"
+                f"Symbol: `{signal.symbol}`\\n"
+                f"Причина: `reduce-only rejected (110017), позиция всё ещё открыта`\\n"
+                f"Size: `{current_position.size}` | positionIdx: `{current_position.position_idx}`"
+            )
 
     def _resolve_order_side(self, direction: SignalDirection) -> OrderSide:
         if direction in (SignalDirection.LONG, SignalDirection.CLOSE_SHORT):
@@ -262,3 +308,40 @@ class OrchestratorExecutionMixin:
                     strategy=signal.strategy_name,
                 )
             )
+
+    async def _finalize_close_after_submit(
+        self,
+        signal: Signal,
+        expected_close_qty: Decimal,
+        previous_position: Position,
+    ) -> None:
+        if not self._position_manager:
+            return
+        prev_size = previous_position.size
+        updated_position = None
+        for _ in range(3):
+            await self._position_manager.sync_positions([signal.symbol])
+            updated_position = self._position_manager.get_position(signal.symbol)
+            new_size = updated_position.size if updated_position else Decimal("0")
+            if new_size < prev_size:
+                break
+            await asyncio.sleep(0.4)
+        new_size = updated_position.size if updated_position else Decimal("0")
+        if new_size >= prev_size:
+            await logger.awarning(
+                "close_submit_without_position_change",
+                symbol=signal.symbol,
+                prev_size=str(prev_size),
+                new_size=str(new_size),
+            )
+            return
+
+        closed_qty = min(expected_close_qty, prev_size - new_size)
+        await self._account_closed_trade(
+            signal=signal,
+            close_qty=closed_qty,
+            position_size=prev_size,
+            entry_price=previous_position.entry_price,
+            mark_price=updated_position.mark_price if updated_position else previous_position.mark_price,
+            unrealized_pnl=previous_position.unrealized_pnl,
+        )
