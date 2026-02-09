@@ -21,6 +21,15 @@ from data.models import MarketCategory, OrderSide, OrderStatus, OrderType, Posit
 logger = structlog.get_logger("rest_api")
 
 
+def _safe_decimal(value: Any, default: str = "0") -> Decimal:
+    if value is None:
+        return Decimal(default)
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal(default)
+
+
 class RestApi:
     def __init__(self, client: BybitClient, rate_limiter: RateLimiter) -> None:
         self._client = client
@@ -59,11 +68,11 @@ class RestApi:
                     symbol=symbol,
                     timeframe=timeframe,
                     open_time=int(row[0]),
-                    open=Decimal(str(row[1])),
-                    high=Decimal(str(row[2])),
-                    low=Decimal(str(row[3])),
-                    close=Decimal(str(row[4])),
-                    volume=Decimal(str(row[5])),
+                    open=_safe_decimal(row[1]),
+                    high=_safe_decimal(row[2]),
+                    low=_safe_decimal(row[3]),
+                    close=_safe_decimal(row[4]),
+                    volume=_safe_decimal(row[5]),
                 )
                 for row in data
             ]
@@ -211,19 +220,20 @@ def _build_order_params(request: OrderRequest) -> dict[str, Any]:
 
 
 def _parse_ticker(symbol: str, data: dict[str, Any]) -> Ticker:
+    info = data.get("info") or {}
     return Ticker(
         symbol=symbol,
-        last_price=Decimal(str(data.get("last", 0))),
-        bid_price=Decimal(str(data.get("bid", 0))),
-        ask_price=Decimal(str(data.get("ask", 0))),
-        high_24h=Decimal(str(data.get("high", 0))),
-        low_24h=Decimal(str(data.get("low", 0))),
-        volume_24h=Decimal(str(data.get("baseVolume", 0))),
-        turnover_24h=Decimal(str(data.get("quoteVolume", 0))),
-        funding_rate=Decimal(str(data.get("info", {}).get("fundingRate", 0))),
-        mark_price=Decimal(str(data.get("info", {}).get("markPrice", 0))),
-        index_price=Decimal(str(data.get("info", {}).get("indexPrice", 0))),
-        timestamp=int(data.get("timestamp", 0)),
+        last_price=_safe_decimal(data.get("last")),
+        bid_price=_safe_decimal(data.get("bid")),
+        ask_price=_safe_decimal(data.get("ask")),
+        high_24h=_safe_decimal(data.get("high")),
+        low_24h=_safe_decimal(data.get("low")),
+        volume_24h=_safe_decimal(data.get("baseVolume")),
+        turnover_24h=_safe_decimal(data.get("quoteVolume")),
+        funding_rate=_safe_decimal(info.get("fundingRate")),
+        mark_price=_safe_decimal(info.get("markPrice")),
+        index_price=_safe_decimal(info.get("indexPrice")),
+        timestamp=int(data.get("timestamp") or 0),
     )
 
 
@@ -235,47 +245,54 @@ def _parse_order_result(data: dict[str, Any]) -> OrderResult:
         "expired": OrderStatus.CANCELLED,
         "rejected": OrderStatus.REJECTED,
     }
+    fee_data = data.get("fee")
+    fee_cost = Decimal("0")
+    fee_currency = ""
+    if isinstance(fee_data, dict) and fee_data.get("cost") is not None:
+        fee_cost = _safe_decimal(fee_data["cost"])
+        fee_currency = fee_data.get("currency", "") or ""
     return OrderResult(
-        order_id=data.get("id", ""),
-        client_order_id=data.get("clientOrderId", ""),
-        symbol=data.get("symbol", ""),
+        order_id=data.get("id") or "",
+        client_order_id=data.get("clientOrderId") or "",
+        symbol=data.get("symbol") or "",
         side=OrderSide.BUY if data.get("side") == "buy" else OrderSide.SELL,
         order_type=OrderType.LIMIT if data.get("type") == "limit" else OrderType.MARKET,
-        quantity=Decimal(str(data.get("amount", 0))),
-        price=Decimal(str(data["price"])) if data.get("price") else None,
-        avg_fill_price=Decimal(str(data["average"])) if data.get("average") else None,
-        filled_qty=Decimal(str(data.get("filled", 0))),
-        remaining_qty=Decimal(str(data.get("remaining", 0))),
+        quantity=_safe_decimal(data.get("amount")),
+        price=_safe_decimal(data.get("price")) if data.get("price") is not None else None,
+        avg_fill_price=_safe_decimal(data.get("average")) if data.get("average") is not None else None,
+        filled_qty=_safe_decimal(data.get("filled")),
+        remaining_qty=_safe_decimal(data.get("remaining")),
         status=status_map.get(data.get("status", ""), OrderStatus.NEW),
-        fee=Decimal(str(data.get("fee", {}).get("cost", 0))) if data.get("fee") else Decimal("0"),
-        fee_currency=data.get("fee", {}).get("currency", "") if data.get("fee") else "",
-        created_at=int(data.get("timestamp", 0)),
+        fee=fee_cost,
+        fee_currency=fee_currency,
+        created_at=int(data.get("timestamp") or 0),
     )
 
 
 def _parse_position(data: dict[str, Any]) -> Position:
-    side = data.get("side", "")
+    side = data.get("side") or ""
+    info = data.get("info") or {}
     return Position(
-        symbol=data.get("symbol", ""),
+        symbol=data.get("symbol") or "",
         side=PositionSide.LONG if side == "long" else PositionSide.SHORT if side == "short" else PositionSide.NONE,
-        size=Decimal(str(data.get("contracts", 0))),
-        entry_price=Decimal(str(data.get("entryPrice", 0))),
-        mark_price=Decimal(str(data.get("markPrice", 0))),
-        liquidation_price=Decimal(str(data["liquidationPrice"])) if data.get("liquidationPrice") else None,
-        leverage=Decimal(str(data.get("leverage", 1))),
-        unrealized_pnl=Decimal(str(data.get("unrealizedPnl", 0))),
-        realized_pnl=Decimal(str(data.get("info", {}).get("cumRealisedPnl", 0))),
-        stop_loss=Decimal(str(data["stopLoss"])) if data.get("stopLoss") else None,
-        take_profit=Decimal(str(data["takeProfit"])) if data.get("takeProfit") else None,
-        position_idx=int(data.get("info", {}).get("positionIdx", 0)),
+        size=_safe_decimal(data.get("contracts")),
+        entry_price=_safe_decimal(data.get("entryPrice")),
+        mark_price=_safe_decimal(data.get("markPrice")),
+        liquidation_price=_safe_decimal(data.get("liquidationPrice")) if data.get("liquidationPrice") is not None else None,
+        leverage=_safe_decimal(data.get("leverage"), "1"),
+        unrealized_pnl=_safe_decimal(data.get("unrealizedPnl")),
+        realized_pnl=_safe_decimal(info.get("cumRealisedPnl")),
+        stop_loss=_safe_decimal(data.get("stopLoss")) if data.get("stopLoss") is not None else None,
+        take_profit=_safe_decimal(data.get("takeProfit")) if data.get("takeProfit") is not None else None,
+        position_idx=int(info.get("positionIdx") or 0),
     )
 
 
 def _parse_balance(data: dict[str, Any]) -> AccountBalance:
-    total = data.get("total", {})
-    free = data.get("free", {})
-    usdt_total = Decimal(str(total.get("USDT", 0)))
-    usdt_free = Decimal(str(free.get("USDT", 0)))
+    total = data.get("total") or {}
+    free = data.get("free") or {}
+    usdt_total = _safe_decimal(total.get("USDT"))
+    usdt_free = _safe_decimal(free.get("USDT"))
 
     return AccountBalance(
         total_equity=usdt_total,
