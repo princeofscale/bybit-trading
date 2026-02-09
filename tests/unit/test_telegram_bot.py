@@ -28,6 +28,7 @@ class TestTelegramFormatter:
         text = TelegramFormatter.format_alert(alert)
         assert "High Drawdown" in text
         assert "risk_manager" in text
+        assert "Источник" in text
 
     def test_format_trade_opened(self) -> None:
         text = TelegramFormatter.format_trade_opened(
@@ -35,9 +36,9 @@ class TestTelegramFormatter:
             entry_price=Decimal("50000"), stop_loss=Decimal("49000"),
             take_profit=Decimal("52000"), strategy="ema_crossover",
         )
-        assert "LONG" in text
+        assert "ЛОНГ" in text
         assert "BTCUSDT" in text
-        assert "50000" in text
+        assert "Вход" in text
 
     def test_format_trade_closed_win(self) -> None:
         text = TelegramFormatter.format_trade_closed(
@@ -45,7 +46,7 @@ class TestTelegramFormatter:
             pnl_pct=Decimal("0.03"), entry_price=Decimal("3100"),
             exit_price=Decimal("3000"), strategy="mean_reversion",
         )
-        assert "WIN" in text
+        assert "ПРИБЫЛЬ" in text
         assert "150.50" in text
 
     def test_format_trade_closed_loss(self) -> None:
@@ -54,7 +55,7 @@ class TestTelegramFormatter:
             pnl_pct=Decimal("-0.02"), entry_price=Decimal("50000"),
             exit_price=Decimal("49000"), strategy="trend",
         )
-        assert "LOSS" in text
+        assert "УБЫТОК" in text
 
     def test_format_status(self) -> None:
         text = TelegramFormatter.format_status(
@@ -64,7 +65,7 @@ class TestTelegramFormatter:
         )
         assert "running" in text
         assert "50000" in text
-        assert "ema" in text
+        assert "Статус бота" in text
 
     def test_format_status_with_session(self) -> None:
         text = TelegramFormatter.format_status(
@@ -83,29 +84,40 @@ class TestTelegramFormatter:
             current_drawdown=Decimal("0.16"),
             max_drawdown=Decimal("0.15"),
         )
-        assert "RISK ALERT" in text
+        assert "РИСК-АЛЕРТ" in text
         assert "16.00%" in text
 
     def test_format_positions_empty(self) -> None:
         text = TelegramFormatter.format_positions([])
-        assert "No open positions" in text
+        assert "Нет открытых позиций" in text
 
     def test_format_positions_with_data(self) -> None:
         positions: list[dict[str, Any]] = [
             {"symbol": "BTCUSDT", "side": "long", "size": Decimal("0.5"),
-             "entry": Decimal("50000"), "pnl": Decimal("100")},
+             "entry": Decimal("50000"), "pnl": Decimal("100"),
+             "mark": Decimal("50100"), "liq": Decimal("40000"),
+             "leverage": Decimal("3"), "stop_loss": Decimal("49000"),
+             "take_profit": Decimal("52000")},
         ]
         text = TelegramFormatter.format_positions(positions)
         assert "BTCUSDT" in text
         assert "LONG" in text
         assert "100" in text
+        assert "Марк" in text
+        assert "Ликвидация" in text
+        assert "Плечо" in text
+        assert "SL" in text
+        assert "TP" in text
 
     def test_format_help(self) -> None:
         text = TelegramFormatter.format_help()
         assert "/status" in text
         assert "/positions" in text
+        assert "/guard" in text
+        assert "/close_ready" in text
         assert "/pause" in text
         assert "/resume" in text
+        assert "Команды бота" in text
 
     def test_format_trade_opened_short(self) -> None:
         text = TelegramFormatter.format_trade_opened(
@@ -113,7 +125,7 @@ class TestTelegramFormatter:
             entry_price=Decimal("3000"), stop_loss=Decimal("3100"),
             take_profit=Decimal("2800"), strategy="momentum",
         )
-        assert "SHORT" in text
+        assert "ШОРТ" in text
 
 
 class TestTelegramAlertSink:
@@ -162,6 +174,8 @@ class TestTelegramCommand:
         assert TelegramCommand.STATUS == "/status"
         assert TelegramCommand.POSITIONS == "/positions"
         assert TelegramCommand.PNL == "/pnl"
+        assert TelegramCommand.CLOSE_READY == "/close_ready"
+        assert TelegramCommand.GUARD == "/guard"
         assert TelegramCommand.PAUSE == "/pause"
         assert TelegramCommand.RESUME == "/resume"
         assert TelegramCommand.RISK == "/risk"

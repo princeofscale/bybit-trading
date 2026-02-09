@@ -20,6 +20,12 @@ def test_risk_defaults() -> None:
     assert risk.max_concurrent_positions == 10
     assert risk.circuit_breaker_consecutive_losses == 3
     assert risk.circuit_breaker_cooldown_hours == 4
+    assert risk.enable_circuit_breaker is True
+    assert risk.enable_daily_loss_limit is True
+    assert risk.enable_symbol_cooldown is True
+    assert risk.symbol_cooldown_minutes == 180
+    assert risk.soft_stop_threshold_pct == Decimal("0.80")
+    assert risk.portfolio_heat_limit_pct == Decimal("0.08")
 
 
 def test_exchange_testnet_default() -> None:
@@ -32,3 +38,4 @@ def test_database_url() -> None:
     url = settings.database.async_url
     assert url.startswith("postgresql+asyncpg://")
     assert "trading_bot" in url
+    assert settings.risk_guards.enable_circuit_breaker is True

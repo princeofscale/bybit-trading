@@ -10,6 +10,7 @@ logger = structlog.get_logger("circuit_breaker")
 
 class CircuitBreaker:
     def __init__(self, risk_settings: RiskSettings) -> None:
+        self._enabled = risk_settings.enable_circuit_breaker
         self._max_consecutive = risk_settings.circuit_breaker_consecutive_losses
         self._cooldown_ms = risk_settings.circuit_breaker_cooldown_hours * 3_600_000
         self._consecutive_losses = 0
@@ -43,9 +44,13 @@ class CircuitBreaker:
         return max(0, remaining)
 
     def record_win(self) -> None:
+        if not self._enabled:
+            return
         self._consecutive_losses = 0
 
     def record_loss(self) -> None:
+        if not self._enabled:
+            return
         self._consecutive_losses += 1
         if self._consecutive_losses >= self._max_consecutive:
             self._trip()
@@ -70,4 +75,6 @@ class CircuitBreaker:
         logger.warning("circuit_breaker_forced", reason=reason)
 
     def is_trading_allowed(self) -> bool:
+        if not self._enabled:
+            return True
         return not self.is_tripped

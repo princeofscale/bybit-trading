@@ -100,6 +100,12 @@ class TestDailyLossHalt:
         assert result is True
         assert monitor.is_halted is False
 
+    def test_soft_stop_before_daily_hard_limit(self, monitor: DrawdownMonitor) -> None:
+        monitor.update_equity(Decimal("9600"))
+        assert monitor.is_halted is False
+        assert monitor.is_soft_stopped is True
+        assert "soft_daily_loss" in monitor.soft_stop_reason
+
 
 class TestResets:
     def test_reset_daily_clears_daily_halt(self, monitor: DrawdownMonitor) -> None:
@@ -142,3 +148,10 @@ class TestEdgeCases:
     def test_zero_daily_start_pnl_is_zero(self, settings: RiskSettings) -> None:
         mon = DrawdownMonitor(settings)
         assert mon.daily_pnl_pct == Decimal("0")
+
+    def test_daily_limit_can_be_disabled(self, settings: RiskSettings) -> None:
+        mon = DrawdownMonitor(settings.model_copy(update={"enable_daily_loss_limit": False}))
+        mon.initialize(Decimal("10000"))
+        result = mon.update_equity(Decimal("9000"))
+        assert result is True
+        assert mon.is_halted is False

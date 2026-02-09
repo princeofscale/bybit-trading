@@ -1,4 +1,5 @@
 import uuid
+from time import monotonic
 
 import structlog
 
@@ -6,6 +7,7 @@ from data.models import OrderSide, OrderStatus, OrderType
 from exchange.errors import ExchangeError
 from exchange.models import InFlightOrder, InFlightOrderStatus, OrderRequest, OrderResult
 from exchange.rest_api import RestApi
+from utils.time_utils import utc_now_ms
 
 logger = structlog.get_logger("order_manager")
 
@@ -16,6 +18,7 @@ class OrderManager:
         self._in_flight: dict[str, InFlightOrder] = {}
 
     async def submit_order(self, request: OrderRequest, strategy_name: str = "") -> InFlightOrder:
+        submit_started = monotonic()
         client_id = request.client_order_id or str(uuid.uuid4())
         request.client_order_id = client_id
 
@@ -33,7 +36,11 @@ class OrderManager:
         try:
             result = await self._rest_api.place_order(request)
             in_flight.exchange_order_id = result.order_id
+            in_flight.filled_qty = result.filled_qty
+            in_flight.avg_fill_price = result.avg_fill_price
+            in_flight.fee = result.fee
             in_flight.status = InFlightOrderStatus.OPEN
+            in_flight.last_update = utc_now_ms()
             await logger.ainfo(
                 "order_submitted",
                 client_id=client_id,
@@ -43,6 +50,7 @@ class OrderManager:
                 type=request.order_type,
                 qty=str(request.quantity),
                 price=str(request.price) if request.price else "market",
+                ack_latency_ms=round((monotonic() - submit_started) * 1000, 3),
             )
             return in_flight
         except ExchangeError as e:
@@ -87,6 +95,9 @@ class OrderManager:
         for order in self._in_flight.values():
             if order.exchange_order_id == order_result.order_id:
                 order.filled_qty = order_result.filled_qty
+                order.avg_fill_price = order_result.avg_fill_price
+                order.fee = order_result.fee
+                order.last_update = order_result.updated_at
                 if order_result.status in {OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED}:
                     order.status = InFlightOrderStatus.DONE
                 elif order_result.status == OrderStatus.PARTIALLY_FILLED:

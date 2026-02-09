@@ -120,3 +120,10 @@ class TestCustomSettings:
         assert breaker.is_trading_allowed() is True
         breaker.record_loss()
         assert breaker.is_trading_allowed() is False
+
+    def test_disabled_circuit_breaker_never_blocks(self) -> None:
+        settings = RiskSettings(enable_circuit_breaker=False)
+        breaker = CircuitBreaker(settings)
+        for _ in range(10):
+            breaker.record_loss()
+        assert breaker.is_trading_allowed() is True

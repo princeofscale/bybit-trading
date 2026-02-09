@@ -67,15 +67,30 @@ def rm(settings: RiskSettings) -> RiskManager:
 class TestExitSignals:
     def test_close_long_always_approved(self, rm: RiskManager) -> None:
         signal = _make_signal(SignalDirection.CLOSE_LONG)
-        decision = rm.evaluate_signal(signal, Decimal("10000"), [])
+        positions = [_make_position(symbol="BTCUSDT", size=Decimal("0.3"))]
+        decision = rm.evaluate_signal(signal, Decimal("10000"), positions)
         assert decision.approved is True
         assert decision.reason == "exit_signal"
+        assert decision.quantity == Decimal("0.3")
 
     def test_close_short_always_approved(self, rm: RiskManager) -> None:
         signal = _make_signal(SignalDirection.CLOSE_SHORT)
-        decision = rm.evaluate_signal(signal, Decimal("10000"), [])
+        short_pos = Position(
+            symbol="BTCUSDT",
+            side=PositionSide.SHORT,
+            size=Decimal("0.25"),
+            entry_price=Decimal("50000"),
+        )
+        decision = rm.evaluate_signal(signal, Decimal("10000"), [short_pos])
         assert decision.approved is True
         assert decision.reason == "exit_signal"
+        assert decision.quantity == Decimal("0.25")
+
+    def test_close_rejected_without_matching_position(self, rm: RiskManager) -> None:
+        signal = _make_signal(SignalDirection.CLOSE_SHORT)
+        decision = rm.evaluate_signal(signal, Decimal("10000"), [])
+        assert decision.approved is False
+        assert decision.reason == "no_position_to_close"
 
 
 class TestNeutralSignal:
@@ -232,3 +247,40 @@ class TestFundingArbSpecialHandling:
         signal = _make_signal(strategy="funding_rate_arb")
         decision = rm.evaluate_signal(signal, Decimal("100000"), positions)
         assert "max_positions" not in decision.reason
+
+
+class TestSoftStopAndCooldown:
+    def test_soft_stop_rejects_low_confidence(self, rm: RiskManager) -> None:
+        rm.update_equity(Decimal("9600"))
+        signal = _make_signal()
+        signal.confidence = 0.6
+        decision = rm.evaluate_signal(signal, Decimal("9600"), [])
+        assert decision.approved is False
+        assert "soft_stop_low_confidence" in decision.reason
+
+    def test_symbol_cooldown_blocks_reentry(self, rm: RiskManager) -> None:
+        rm.record_trade_result(is_win=False, symbol="BTCUSDT")
+        signal = _make_signal()
+        decision = rm.evaluate_signal(signal, Decimal("10000"), [])
+        assert decision.approved is False
+        assert decision.reason == "symbol_cooldown_active"
+
+    def test_portfolio_heat_blocks_new_entries(self, rm: RiskManager) -> None:
+        positions = [_make_position(size=Decimal("1"), entry=Decimal("900"))]
+        decision = rm.evaluate_signal(_make_signal(), Decimal("10000"), positions)
+        assert decision.approved is False
+        assert decision.reason == "portfolio_heat_limit"
+
+    def test_rejects_wide_spread_from_metadata(self, rm: RiskManager) -> None:
+        signal = _make_signal()
+        signal.metadata["spread_bps"] = 25.0
+        decision = rm.evaluate_signal(signal, Decimal("10000"), [])
+        assert decision.approved is False
+        assert "spread_too_wide" in decision.reason
+
+    def test_rejects_low_liquidity_from_metadata(self, rm: RiskManager) -> None:
+        signal = _make_signal()
+        signal.metadata["liquidity_score"] = 0.1
+        decision = rm.evaluate_signal(signal, Decimal("10000"), [])
+        assert decision.approved is False
+        assert "low_liquidity" in decision.reason

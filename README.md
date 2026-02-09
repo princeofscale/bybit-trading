@@ -131,14 +131,41 @@ python scripts/optimize_strategy.py [data_file] [n_trials]
 - Риск-алерты (просадка, circuit breaker)
 - Статус бота по команде `/status`
 
-Команды: `/status`, `/positions`, `/pnl`, `/pause`, `/resume`, `/risk`, `/help`
+Команды: `/status`, `/positions`, `/pnl`, `/close_ready`, `/guard`, `/pause`, `/resume`, `/risk`, `/help`
 
-## Риск-менеджмент (не отключается)
+`/close_ready <symbol>` показывает диагностику, почему символ сейчас не закрывается (или готов к закрытию).
+
+## Риск-менеджмент (конфигурируемые guards)
 
 - Все позиции обязаны иметь стоп-лосс
-- Circuit breaker: 3 подряд стоп-лосса → пауза 4 часа
-- Drawdown monitor: превышение лимита → полная остановка торговли
+- Circuit breaker: N подряд убытков -> пауза на M часов
+- Daily loss guard:
+- soft stop на 80% дневного лимита (только high-confidence сигналы)
+- hard stop при 100% дневного лимита (пауза до нового дня)
+- Symbol cooldown после убыточного закрытия (по инструменту)
+- Portfolio heat limit: блок новых входов при перегреве риска
+- Drawdown monitor: превышение лимита просадки -> полная остановка торговли
 - Exposure manager: лимиты на количество позиций, плечо, общий риск
+
+Основные env-переменные:
+- `RISK_GUARD_ENABLE_CIRCUIT_BREAKER`
+- `RISK_GUARD_CIRCUIT_BREAKER_CONSECUTIVE_LOSSES`
+- `RISK_GUARD_CIRCUIT_BREAKER_COOLDOWN_HOURS`
+- `RISK_GUARD_ENABLE_DAILY_LOSS_LIMIT`
+- `RISK_GUARD_DAILY_LOSS_LIMIT_PCT`
+- `RISK_GUARD_ENABLE_SYMBOL_COOLDOWN`
+- `RISK_GUARD_SYMBOL_COOLDOWN_MINUTES`
+- `RISK_GUARD_SOFT_STOP_THRESHOLD_PCT`
+- `RISK_GUARD_SOFT_STOP_MIN_CONFIDENCE`
+- `RISK_GUARD_PORTFOLIO_HEAT_LIMIT_PCT`
+
+## Операционный регламент
+
+1. Минимум 14 дней на `testnet` без breach hard-limit перед масштабированием.
+2. Порядок профилей: `conservative -> moderate -> увеличение капитала`.
+3. Переход на следующий этап только при стабильных `DD`, `PF`, `Sharpe`.
+
+При перезапуске бот синхронизирует открытые позиции с биржей, восстанавливает strategy state и делает reconcile на старте.
 
 ## Как улучшить доходность
 

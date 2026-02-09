@@ -17,7 +17,7 @@ async def main() -> None:
     settings = get_settings()
     setup_logging(settings.log_level, settings.log_format)
 
-    profile_name = os.environ.get("RISK_PROFILE", "moderate")
+    profile_name = os.environ.get("RISK_PROFILE", "conservative")
     profile = get_profile(RiskProfile(profile_name))
 
     journal_path = Path("journal.db")

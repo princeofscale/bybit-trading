@@ -66,12 +66,24 @@ nano .env
 # Bybit Demo Trading API Keys
 BYBIT_API_KEY=ваш_api_key
 BYBIT_API_SECRET=ваш_api_secret
-BYBIT_TESTNET=false
+BYBIT_TESTNET=true
 BYBIT_DEMO_TRADING=true
 BYBIT_RECV_WINDOW=5000
 
 # Risk Profile
-RISK_PROFILE=moderate
+RISK_PROFILE=conservative
+
+# Risk guards
+RISK_GUARD_ENABLE_CIRCUIT_BREAKER=true
+RISK_GUARD_CIRCUIT_BREAKER_CONSECUTIVE_LOSSES=3
+RISK_GUARD_CIRCUIT_BREAKER_COOLDOWN_HOURS=4
+RISK_GUARD_ENABLE_DAILY_LOSS_LIMIT=true
+RISK_GUARD_DAILY_LOSS_LIMIT_PCT=0.03
+RISK_GUARD_ENABLE_SYMBOL_COOLDOWN=true
+RISK_GUARD_SYMBOL_COOLDOWN_MINUTES=180
+RISK_GUARD_SOFT_STOP_THRESHOLD_PCT=0.80
+RISK_GUARD_SOFT_STOP_MIN_CONFIDENCE=0.75
+RISK_GUARD_PORTFOLIO_HEAT_LIMIT_PCT=0.08
 
 # Telegram (опционально)
 TELEGRAM_ENABLED=true
@@ -319,5 +331,7 @@ docker compose stop grafana
 
 **Что дальше:**
 - Следите за Telegram для сигналов
+- Держите минимум 14 дней testnet без hard-limit breach
+- Переходите по этапам: conservative -> moderate -> масштабирование капитала
 - Проверяйте логи раз в день
 - Делайте бэкапы раз в неделю

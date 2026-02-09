@@ -1,6 +1,7 @@
 from collections.abc import Callable, Coroutine
 from decimal import Decimal
 from enum import StrEnum
+from inspect import signature
 from typing import Any
 
 import httpx
@@ -15,6 +16,8 @@ class TelegramCommand(StrEnum):
     STATUS = "/status"
     POSITIONS = "/positions"
     PNL = "/pnl"
+    CLOSE_READY = "/close_ready"
+    GUARD = "/guard"
     PAUSE = "/pause"
     RESUME = "/resume"
     RISK = "/risk"
@@ -28,7 +31,7 @@ class TelegramFormatter:
         return (
             f"{emoji} *{alert.title}*\n"
             f"{alert.message}\n"
-            f"Source: `{alert.source}`"
+            f"Источник: `{alert.source}`"
         )
 
     @staticmethod
@@ -37,13 +40,13 @@ class TelegramFormatter:
         entry_price: Decimal, stop_loss: Decimal,
         take_profit: Decimal, strategy: str,
     ) -> str:
-        arrow = "🟢 LONG" if side.lower() == "long" else "🔴 SHORT"
+        arrow = "🟢 ЛОНГ" if side.lower() == "long" else "🔴 ШОРТ"
         return (
             f"{arrow} *{symbol}*\n"
-            f"Entry: `{entry_price}`\n"
-            f"Size: `{size}`\n"
+            f"Вход: `{entry_price}`\n"
+            f"Размер: `{size}`\n"
             f"SL: `{stop_loss}` | TP: `{take_profit}`\n"
-            f"Strategy: `{strategy}`"
+            f"Стратегия: `{strategy}`"
         )
 
     @staticmethod
@@ -51,13 +54,13 @@ class TelegramFormatter:
         symbol: str, side: str, pnl: Decimal, pnl_pct: Decimal,
         entry_price: Decimal, exit_price: Decimal, strategy: str,
     ) -> str:
-        result = "✅ WIN" if pnl > 0 else "❌ LOSS"
+        result = "✅ ПРИБЫЛЬ" if pnl > 0 else "❌ УБЫТОК"
         sign = "+" if pnl > 0 else ""
         return (
             f"{result} *{symbol}* ({side})\n"
             f"PnL: `{sign}{pnl:.4f} USDT ({sign}{pnl_pct * 100:.2f}%)`\n"
-            f"Entry: `{entry_price}` → Exit: `{exit_price}`\n"
-            f"Strategy: `{strategy}`"
+            f"Вход: `{entry_price}` → Выход: `{exit_price}`\n"
+            f"Стратегия: `{strategy}`"
         )
 
     @staticmethod
@@ -68,15 +71,15 @@ class TelegramFormatter:
     ) -> str:
         sign = "+" if daily_pnl >= 0 else ""
         return (
-            f"📊 *Bot Status*\n"
-            f"State: `{bot_state}`\n"
-            f"Session: `{session_id}`\n"
-            f"Equity: `{equity:.2f} USDT`\n"
-            f"Open positions: `{open_positions}`\n"
-            f"Daily PnL: `{sign}{daily_pnl:.2f} USDT`\n"
-            f"Signals generated: `{signals_count}`\n"
-            f"Trades executed: `{trades_count}`\n"
-            f"Strategies: `{', '.join(active_strategies)}`"
+            f"📊 *Статус бота*\n"
+            f"Состояние: `{bot_state}`\n"
+            f"Сессия: `{session_id}`\n"
+            f"Эквити: `{equity:.2f} USDT`\n"
+            f"Открытых позиций: `{open_positions}`\n"
+            f"Дневной PnL: `{sign}{daily_pnl:.2f} USDT`\n"
+            f"Сигналов: `{signals_count}`\n"
+            f"Сделок: `{trades_count}`\n"
+            f"Стратегии: `{', '.join(active_strategies)}`"
         )
 
     @staticmethod
@@ -84,43 +87,60 @@ class TelegramFormatter:
         reason: str, current_drawdown: Decimal, max_drawdown: Decimal,
     ) -> str:
         return (
-            f"🚨 *RISK ALERT*\n"
-            f"Reason: `{reason}`\n"
-            f"Current DD: `{current_drawdown * 100:.2f}%`\n"
-            f"Max DD Limit: `{max_drawdown * 100:.2f}%`"
+            f"🚨 *РИСК-АЛЕРТ*\n"
+            f"Причина: `{reason}`\n"
+            f"Текущая просадка: `{current_drawdown * 100:.2f}%`\n"
+            f"Лимит просадки: `{max_drawdown * 100:.2f}%`"
         )
 
     @staticmethod
     def format_positions(positions: list[dict[str, Any]]) -> str:
         if not positions:
-            return "📋 *Open Positions*\n\nNo open positions."
-        lines = ["📋 *Open Positions*\n"]
+            return "📋 *Открытые позиции*\n\nНет открытых позиций."
+        lines = ["📋 *Открытые позиции*\n"]
         for p in positions:
             side_emoji = "🟢" if p.get("side") == "long" else "🔴"
             pnl = p.get("pnl", Decimal(0))
             sign = "+" if pnl >= 0 else ""
+            size = p.get("size", Decimal(0))
+            entry = p.get("entry", Decimal(0))
+            notional = entry * size if entry and size else Decimal("0")
+            pnl_pct = (pnl / notional * 100) if notional > 0 else Decimal("0")
+            mark = p.get("mark", Decimal(0))
+            liq = p.get("liq")
+            lev = p.get("leverage")
+            sl = p.get("stop_loss")
+            tp = p.get("take_profit")
+            liq_str = f"{liq}" if liq is not None else "—"
+            lev_str = f"{lev}" if lev is not None else "—"
+            sl_str = f"{sl}" if sl is not None else "—"
+            tp_str = f"{tp}" if tp is not None else "—"
             lines.append(
                 f"{side_emoji} *{p['symbol']}* {p.get('side', '').upper()}\n"
-                f"  Size: `{p.get('size', 0)}` | Entry: `{p.get('entry', 0)}`\n"
-                f"  PnL: `{sign}{pnl:.4f} USDT`"
+                f"  Размер: `{size}` | Вход: `{entry}` | Марк: `{mark}`\n"
+                f"  PnL: `{sign}{pnl:.4f} USDT ({pnl_pct:.2f}%)`\n"
+                f"  Ликвидация: `{liq_str}` | Плечо: `{lev_str}`\n"
+                f"  SL: `{sl_str}` | TP: `{tp_str}`"
             )
         return "\n".join(lines)
 
     @staticmethod
     def format_help() -> str:
         return (
-            "🤖 *Trading Bot Commands*\n\n"
-            "/status — Bot status & equity\n"
-            "/positions — Open positions\n"
-            "/pnl — Daily PnL summary\n"
-            "/pause — Pause trading\n"
-            "/resume — Resume trading\n"
-            "/risk — Risk metrics\n"
-            "/help — This message"
+            "🤖 *Команды бота*\n\n"
+            "/status — Статус и эквити\n"
+            "/positions — Открытые позиции\n"
+            "/pnl — Сводка PnL\n"
+            "/close_ready <symbol> — Диагностика закрытия\n"
+            "/guard — Статус risk guard\n"
+            "/pause — Пауза торговли\n"
+            "/resume — Возобновить торговлю\n"
+            "/risk — Риск-метрики\n"
+            "/help — Эта справка"
         )
 
 
-CommandHandler = Callable[[], Coroutine[Any, Any, str]]
+CommandHandler = Callable[..., Coroutine[Any, Any, str]]
 
 
 class TelegramAlertSink:
@@ -198,15 +218,20 @@ class TelegramAlertSink:
                     continue
 
                 cmd = text.split()[0].split("@")[0].lower()
+                args = text.split()[1:]
                 handler = self._command_handlers.get(cmd)
 
                 if handler:
-                    reply = await handler()
+                    params_count = len(signature(handler).parameters)
+                    if params_count == 0:
+                        reply = await handler()
+                    else:
+                        reply = await handler(args)
                     await self._reply_to(chat_id, reply)
                 elif cmd == "/help":
                     await self._reply_to(chat_id, self._formatter.format_help())
                 else:
-                    await self._reply_to(chat_id, f"Unknown command: {cmd}\nTry /help")
+                    await self._reply_to(chat_id, f"Неизвестная команда: {cmd}\nПопробуйте /help")
 
         except httpx.TimeoutException:
             pass

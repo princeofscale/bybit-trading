@@ -82,6 +82,18 @@ BYBIT_TESTNET=true
 # Выберите профиль риска
 RISK_PROFILE=conservative   # или moderate, aggressive
 
+# Risk guards (рекомендуемые безопасные значения)
+RISK_GUARD_ENABLE_CIRCUIT_BREAKER=true
+RISK_GUARD_CIRCUIT_BREAKER_CONSECUTIVE_LOSSES=3
+RISK_GUARD_CIRCUIT_BREAKER_COOLDOWN_HOURS=4
+RISK_GUARD_ENABLE_DAILY_LOSS_LIMIT=true
+RISK_GUARD_DAILY_LOSS_LIMIT_PCT=0.03
+RISK_GUARD_ENABLE_SYMBOL_COOLDOWN=true
+RISK_GUARD_SYMBOL_COOLDOWN_MINUTES=180
+RISK_GUARD_SOFT_STOP_THRESHOLD_PCT=0.80
+RISK_GUARD_SOFT_STOP_MIN_CONFIDENCE=0.75
+RISK_GUARD_PORTFOLIO_HEAT_LIMIT_PCT=0.08
+
 # Telegram уведомления (рекомендуется)
 TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN=ваш_telegram_bot_token
@@ -110,6 +122,9 @@ DB_PASSWORD=надёжный_пароль_для_postgres
    - Добавьте бота в группу
    - Сделайте бота админом (чтобы он мог читать сообщения)
    - Chat ID группы будет отрицательным: `-1001234567890`
+
+Команды Telegram:
+`/status`, `/positions`, `/pnl`, `/guard`, `/pause`, `/resume`, `/risk`, `/help`
 
 ### Шаг 4: Запуск
 
@@ -326,3 +341,7 @@ docker compose exec bot python3 -c "print('Hello')"
 **Удачного трейдинга! 🚀**
 
 *Помните: всегда тестируйте на testnet перед использованием реальных средств.*
+
+Операционный регламент:
+- минимум 14 дней стабильной работы на testnet без hard-limit breach
+- переход только по схеме conservative -> moderate -> масштабирование капитала

@@ -122,7 +122,16 @@ class TestEmaSignalToRisk:
             confidence=0.5,
             strategy_name="test",
         )
-        decision = risk_manager.evaluate_signal(signal, Decimal("100000"), [])
+        positions = [
+            Position(
+                symbol="BTCUSDT",
+                side="Long",
+                size=Decimal("0.2"),
+                entry_price=Decimal("50000"),
+                leverage=Decimal("1"),
+            )
+        ]
+        decision = risk_manager.evaluate_signal(signal, Decimal("100000"), positions)
         assert decision.approved is True
 
     def test_circuit_breaker_blocks_after_losses(self, risk_manager: RiskManager) -> None:

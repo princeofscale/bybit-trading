@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+from decimal import Decimal
 
 from strategies.base_strategy import BaseStrategy, Signal, SignalDirection, StrategyState
 from strategies.ema_crossover import EmaCrossoverStrategy
@@ -130,3 +131,22 @@ def test_wrong_symbol_no_signal(selector: StrategySelector) -> None:
     df = _make_df()
     signals = selector.generate_signals("SOL/USDT:USDT", df)
     assert len(signals) == 0
+
+
+def test_strategy_deweights_after_poor_results(selector: StrategySelector) -> None:
+    for _ in range(8):
+        selector.record_trade_result("always_long", Decimal("-10"))
+    df = _make_df()
+    sigs = selector.generate_signals("BTC/USDT:USDT", df)
+    best = sigs[0]
+    assert best.strategy_name == "always_short"
+
+
+def test_strategy_disables_after_severe_degradation(selector: StrategySelector) -> None:
+    for _ in range(10):
+        selector.record_trade_result("always_long", Decimal("-10"))
+    health = selector.get_strategy_health("always_long")
+    assert health.get("weight") == 0.0
+    df = _make_df()
+    sigs = selector.generate_signals("BTC/USDT:USDT", df)
+    assert all(s.strategy_name != "always_long" for s in sigs)

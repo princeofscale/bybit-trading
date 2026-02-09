@@ -104,6 +104,8 @@ class InFlightOrder(BaseModel):
     quantity: Decimal
     price: Decimal | None = None
     filled_qty: Decimal = Decimal("0")
+    avg_fill_price: Decimal | None = None
+    fee: Decimal = Decimal("0")
     status: InFlightOrderStatus = InFlightOrderStatus.PENDING_CREATE
     strategy_name: str = ""
     created_at: int = Field(default_factory=utc_now_ms)

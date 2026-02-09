@@ -72,8 +72,17 @@ class RiskSettings(BaseSettings):
     max_daily_loss_pct: Decimal = Decimal("0.05")
     max_leverage: Decimal = Decimal("3.0")
     max_concurrent_positions: int = 10
+    enable_circuit_breaker: bool = True
     circuit_breaker_consecutive_losses: int = 3
     circuit_breaker_cooldown_hours: int = 4
+    enable_daily_loss_limit: bool = True
+    enable_symbol_cooldown: bool = True
+    symbol_cooldown_minutes: int = 180
+    soft_stop_threshold_pct: Decimal = Decimal("0.80")
+    soft_stop_min_confidence: float = 0.75
+    portfolio_heat_limit_pct: Decimal = Decimal("0.08")
+    max_spread_bps: Decimal = Decimal("15")
+    min_liquidity_score: float = 0.30
     funding_arb_max_allocation: Decimal = Decimal("0.30")
 
 
@@ -94,6 +103,21 @@ class TelegramSettings(BaseSettings):
     enabled: bool = False
 
 
+class RiskGuardsSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="RISK_GUARD_")
+
+    enable_circuit_breaker: bool = True
+    circuit_breaker_consecutive_losses: int = 3
+    circuit_breaker_cooldown_hours: int = 4
+    enable_daily_loss_limit: bool = True
+    daily_loss_limit_pct: Decimal = Decimal("0.03")
+    enable_symbol_cooldown: bool = True
+    symbol_cooldown_minutes: int = 180
+    soft_stop_threshold_pct: Decimal = Decimal("0.80")
+    soft_stop_min_confidence: float = 0.75
+    portfolio_heat_limit_pct: Decimal = Decimal("0.08")
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -105,6 +129,7 @@ class AppSettings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
     risk: RiskSettings = Field(default_factory=RiskSettings)
+    risk_guards: RiskGuardsSettings = Field(default_factory=RiskGuardsSettings)
     trading: TradingSettings = Field(default_factory=TradingSettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
 

@@ -8,8 +8,11 @@ import pytest
 from config.settings import AppSettings
 from config.strategy_profiles import MODERATE_PROFILE
 from core.orchestrator import TradingOrchestrator
+from data.models import PositionSide
+from exchange.models import Position
 from data.models import OrderSide
-from strategies.base_strategy import Signal, SignalDirection
+from risk.risk_manager import RiskDecision
+from strategies.base_strategy import Signal, SignalDirection, StrategyState
 
 
 @pytest.fixture
@@ -49,7 +52,7 @@ async def test_cmd_pause_sets_flag(settings: AppSettings, tmp_path: Path) -> Non
 
     result = await orch._cmd_pause()
     assert orch._trading_paused is True
-    assert "PAUSED" in result
+    assert "ПРИОСТАНОВЛЕНА" in result
 
 
 async def test_cmd_resume_clears_flag(settings: AppSettings, tmp_path: Path) -> None:
@@ -59,7 +62,7 @@ async def test_cmd_resume_clears_flag(settings: AppSettings, tmp_path: Path) -> 
 
     result = await orch._cmd_resume()
     assert orch._trading_paused is False
-    assert "RESUMED" in result
+    assert "ВОЗОБНОВЛЕНА" in result
 
 
 async def test_cmd_help_returns_commands(settings: AppSettings, tmp_path: Path) -> None:
@@ -70,6 +73,8 @@ async def test_cmd_help_returns_commands(settings: AppSettings, tmp_path: Path) 
     assert "/status" in result
     assert "/positions" in result
     assert "/pnl" in result
+    assert "/guard" in result
+    assert "Команды бота" in result
 
 
 async def test_cmd_status_with_no_managers(settings: AppSettings, tmp_path: Path) -> None:
@@ -77,7 +82,7 @@ async def test_cmd_status_with_no_managers(settings: AppSettings, tmp_path: Path
     orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
 
     result = await orch._cmd_status()
-    assert "Bot Status" in result
+    assert "Статус бота" in result
     assert "RUNNING" in result
 
 
@@ -86,8 +91,32 @@ async def test_cmd_pnl_with_no_managers(settings: AppSettings, tmp_path: Path) -
     orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
 
     result = await orch._cmd_pnl()
-    assert "PnL" in result
+    assert "Сводка PnL" in result
     assert "0.00 USDT" in result
+    assert "Открытые позиции" in result or "Нет открытых позиций" in result
+
+
+async def test_cmd_guard_without_risk_manager(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+
+    result = await orch._cmd_guard()
+    assert "недоступен" in result
+
+
+async def test_cmd_close_ready_without_symbol(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    result = await orch._cmd_close_ready([])
+    assert "Использование" in result
+
+
+async def test_cmd_close_ready_symbol_not_found(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    orch._symbols = ["BTC/USDT:USDT"]
+    result = await orch._cmd_close_ready(["SOL/USDT:USDT"])
+    assert "не найден" in result
 
 
 async def test_poll_and_analyze_skips_when_paused(settings: AppSettings, tmp_path: Path) -> None:
@@ -108,3 +137,113 @@ async def test_poll_and_analyze_skips_without_rest_api(settings: AppSettings, tm
 
     await orch._poll_and_analyze("BTC/USDT:USDT")
     assert orch._signals_count == 0
+
+
+async def test_account_closed_trade_updates_risk_and_strategy(
+    settings: AppSettings,
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    orch._risk_manager = MagicMock()
+    orch._strategy_selector = MagicMock()
+    orch._journal = AsyncMock()
+    orch._telegram_sink = AsyncMock()
+
+    signal = Signal(
+        symbol="BTC/USDT:USDT",
+        direction=SignalDirection.CLOSE_LONG,
+        confidence=0.9,
+        strategy_name="ema_crossover",
+        entry_price=Decimal("50000"),
+        stop_loss=Decimal("49000"),
+        take_profit=Decimal("51000"),
+    )
+
+    await orch._account_closed_trade(
+        signal=signal,
+        close_qty=Decimal("0.1"),
+        position_size=Decimal("0.2"),
+        entry_price=Decimal("49000"),
+        mark_price=Decimal("50000"),
+        unrealized_pnl=Decimal("100"),
+    )
+
+    orch._risk_manager.record_trade_result.assert_called_once()
+    orch._strategy_selector.record_trade_result.assert_called_once()
+    assert orch._metrics.counter("trades_closed").value == Decimal("1")
+
+
+async def test_resolve_order_side_for_close_short(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    assert orch._resolve_order_side(SignalDirection.CLOSE_SHORT) == OrderSide.BUY
+
+
+async def test_open_request_contains_sl_tp(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    signal = Signal(
+        symbol="BTC/USDT:USDT",
+        direction=SignalDirection.LONG,
+        confidence=0.8,
+        strategy_name="ema_crossover",
+        entry_price=Decimal("50000"),
+        stop_loss=Decimal("49000"),
+        take_profit=Decimal("51000"),
+    )
+
+    orch._trading_paused = False
+    orch._rest_api = AsyncMock()
+    orch._rest_api.fetch_ohlcv = AsyncMock(return_value=[{"a": 1}])
+    orch._candle_buffer = MagicMock()
+    orch._candle_buffer.has_enough.return_value = True
+    orch._candle_buffer.get_candles.return_value = []
+    orch._preprocessor = MagicMock()
+    orch._preprocessor.candles_to_dataframe.return_value = MagicMock()
+    orch._feature_engineer = MagicMock()
+    orch._feature_engineer.build_features.return_value = MagicMock()
+    orch._strategy_selector = MagicMock()
+    orch._strategy_selector.get_best_signal.return_value = signal
+    orch._position_manager = MagicMock()
+    orch._position_manager.get_all_positions.return_value = []
+    orch._account_manager = MagicMock()
+    orch._account_manager.equity = Decimal("10000")
+    orch._risk_manager = MagicMock()
+    orch._risk_manager.evaluate_signal.return_value = RiskDecision(
+        approved=True,
+        quantity=Decimal("0.1"),
+        stop_loss=Decimal("49000"),
+        take_profit=Decimal("51000"),
+    )
+    orch._journal = None
+    orch._telegram_sink = None
+    orch._order_manager = AsyncMock()
+    orch._order_manager.submit_order = AsyncMock(
+        return_value=MagicMock(fee=Decimal("0"), avg_fill_price=None, filled_qty=Decimal("0")),
+    )
+
+    await orch._poll_and_analyze("BTC/USDT:USDT")
+
+    request = orch._order_manager.submit_order.call_args.args[0]
+    assert request.stop_loss == Decimal("49000")
+    assert request.take_profit == Decimal("51000")
+
+
+async def test_restore_strategy_states_from_positions(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    strategy = MagicMock()
+    strategy.symbols = ["BTC/USDT:USDT"]
+    orch._strategy_selector = MagicMock()
+    orch._strategy_selector.strategies = {"ema_crossover": strategy}
+    orch._position_manager = MagicMock()
+    orch._position_manager.get_position.return_value = Position(
+        symbol="BTC/USDT:USDT",
+        side=PositionSide.LONG,
+        size=Decimal("0.5"),
+        entry_price=Decimal("50000"),
+    )
+
+    orch._restore_strategy_states_from_positions()
+    strategy.set_state.assert_called_with("BTC/USDT:USDT", StrategyState.LONG)
