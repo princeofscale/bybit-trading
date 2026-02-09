@@ -136,6 +136,25 @@ class TradingOrchestrator(
         for symbol in recovered_symbols:
             if symbol not in self._symbols:
                 self._symbols.append(symbol)
+
+        self._candle_buffer = CandleBuffer(max_candles=500)
+        self._preprocessor = CandlePreprocessor()
+        self._feature_engineer = FeatureEngineer()
+
+        valid_symbols: list[str] = []
+        for symbol in self._symbols:
+            try:
+                candles = await self._rest_api.fetch_ohlcv(symbol, timeframe="15m", limit=200)
+            except Exception as exc:
+                await logger.awarning("symbol_init_skipped", symbol=symbol, error=str(exc))
+                continue
+            self._candle_buffer.initialize(symbol, candles)
+            valid_symbols.append(symbol)
+            await logger.ainfo("candle_buffer_initialized", symbol=symbol, count=len(candles))
+        self._symbols = valid_symbols
+        if not self._symbols:
+            await logger.awarning("no_valid_symbols_after_init")
+
         strategies = [
             EmaCrossoverStrategy(self._symbols),
             MeanReversionStrategy(self._symbols),
@@ -152,15 +171,6 @@ class TradingOrchestrator(
             strategy_names=[s.name for s in strategies],
             total_equity=balance.total_equity,
         )
-
-        self._candle_buffer = CandleBuffer(max_candles=500)
-        self._preprocessor = CandlePreprocessor()
-        self._feature_engineer = FeatureEngineer()
-
-        for symbol in self._symbols:
-            candles = await self._rest_api.fetch_ohlcv(symbol, timeframe="15m", limit=200)
-            self._candle_buffer.initialize(symbol, candles)
-            await logger.ainfo("candle_buffer_initialized", symbol=symbol, count=len(candles))
 
         self._event_bus = EventBus()
         await self._event_bus.start()
@@ -275,13 +285,21 @@ class TradingOrchestrator(
         await logger.ainfo("orchestrator_stopped")
 
     async def run(self) -> None:
-        await self.start()
+        started = False
         try:
+            await self.start()
+            started = True
             await self._shutdown_event.wait()
         except asyncio.CancelledError:
             pass
         finally:
-            await self.stop()
+            if started:
+                await self.stop()
+            else:
+                try:
+                    await self.stop()
+                except Exception as exc:
+                    await logger.awarning("orchestrator_stop_after_failed_start_error", error=str(exc))
 
     def request_shutdown(self) -> None:
         self._shutdown_event.set()
