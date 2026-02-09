@@ -65,6 +65,17 @@ class OrchestratorLoopsMixin:
             except Exception as exc:
                 await logger.aerror("balance_poll_error", error=str(exc))
 
+    async def _trading_stop_worker_loop(self) -> None:
+        while True:
+            try:
+                await self._process_pending_trading_stops()
+                await asyncio.sleep(max(0.2, self._settings.trading_stop.retry_interval_sec))
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                await logger.aerror("trading_stop_worker_error", error=str(exc))
+                await asyncio.sleep(2)
+
     async def _equity_snapshot_loop(self) -> None:
         while True:
             try:

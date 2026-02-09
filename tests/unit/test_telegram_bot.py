@@ -109,6 +109,25 @@ class TestTelegramFormatter:
         assert "SL" in text
         assert "TP" in text
 
+    def test_format_positions_normalizes_long_side_case(self) -> None:
+        positions: list[dict[str, Any]] = [
+            {"symbol": "BTCUSDT", "side": "Long", "size": Decimal("0.5"),
+             "entry": Decimal("50000"), "pnl": Decimal("100")},
+        ]
+        text = TelegramFormatter.format_positions(positions)
+        assert "🟢" in text
+        assert "LONG" in text
+
+    def test_format_positions_with_tpsl_status(self) -> None:
+        positions: list[dict[str, Any]] = [
+            {"symbol": "BTCUSDT", "side": "short", "size": Decimal("0.5"),
+             "entry": Decimal("50000"), "pnl": Decimal("-10"),
+             "tpsl_status": "pending"},
+        ]
+        text = TelegramFormatter.format_positions(positions)
+        assert "TP/SL status" in text
+        assert "pending" in text
+
     def test_format_help(self) -> None:
         text = TelegramFormatter.format_help()
         assert "/status" in text

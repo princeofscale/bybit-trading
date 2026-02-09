@@ -3,6 +3,7 @@ from decimal import Decimal
 import structlog
 
 from config.settings import RiskSettings
+from data.models import PositionSide
 from exchange.models import Position
 
 logger = structlog.get_logger("exposure_manager")
@@ -70,6 +71,49 @@ class ExposureManager:
 
     def total_exposure_usd(self, positions: list[Position]) -> Decimal:
         return sum(abs(p.size * p.entry_price) for p in positions)
+
+    def directional_exposure_usd(self, positions: list[Position]) -> tuple[Decimal, Decimal]:
+        long_exposure = Decimal("0")
+        short_exposure = Decimal("0")
+        for p in positions:
+            notional = abs(p.size * p.entry_price)
+            if p.side == PositionSide.LONG:
+                long_exposure += notional
+            elif p.side == PositionSide.SHORT:
+                short_exposure += notional
+        return long_exposure, short_exposure
+
+    def check_directional_exposure(
+        self,
+        positions: list[Position],
+        new_direction: PositionSide,
+        new_size_usd: Decimal,
+        equity: Decimal,
+    ) -> ExposureCheck:
+        if not self._settings.enable_directional_exposure_limit:
+            return ExposureCheck(True)
+        if equity <= 0:
+            return ExposureCheck(False, "invalid_equity")
+
+        long_exposure, short_exposure = self.directional_exposure_usd(positions)
+        if new_direction == PositionSide.LONG:
+            long_exposure += abs(new_size_usd)
+            long_pct = long_exposure / equity
+            if long_pct > self._settings.max_directional_exposure_pct:
+                return ExposureCheck(
+                    False,
+                    f"directional_exposure_limit_long: {long_pct:.4f} > {self._settings.max_directional_exposure_pct}",
+                )
+        elif new_direction == PositionSide.SHORT:
+            short_exposure += abs(new_size_usd)
+            short_pct = short_exposure / equity
+            if short_pct > self._settings.max_directional_exposure_pct:
+                return ExposureCheck(
+                    False,
+                    f"directional_exposure_limit_short: {short_pct:.4f} > {self._settings.max_directional_exposure_pct}",
+                )
+
+        return ExposureCheck(True)
 
     def total_portfolio_risk_pct(
         self, positions: list[Position], equity: Decimal,

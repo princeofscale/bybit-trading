@@ -39,6 +39,7 @@ class OrchestratorCommandsMixin:
                 "leverage": p.leverage,
                 "stop_loss": p.stop_loss,
                 "take_profit": p.take_profit,
+                "tpsl_status": self._tpsl_status_for_symbol(p.symbol, p.stop_loss, p.take_profit),
             }
             for p in positions
             if p.size > 0
@@ -105,6 +106,7 @@ class OrchestratorCommandsMixin:
                 "leverage": p.leverage,
                 "stop_loss": p.stop_loss,
                 "take_profit": p.take_profit,
+                "tpsl_status": self._tpsl_status_for_symbol(p.symbol, p.stop_loss, p.take_profit),
             }
             for p in positions
             if p.size > 0
@@ -143,6 +145,9 @@ class OrchestratorCommandsMixin:
         s = self._risk_manager._settings
         state = self._risk_manager.risk_state()
         reason = self._risk_manager.block_reason() or "нет"
+        equity = self._account_manager.equity if self._account_manager else Decimal(0)
+        tp_est = equity * self._settings.risk_guards.take_profit_pct if equity > 0 else Decimal(0)
+        sl_est = equity * self._settings.risk_guards.stop_loss_pct if equity > 0 else Decimal(0)
         return (
             f"🧯 *Risk Guard*\n"
             f"Состояние: `{state}`\n"
@@ -155,6 +160,15 @@ class OrchestratorCommandsMixin:
             f"Cooldown symbol: `{'ON' if s.enable_symbol_cooldown else 'OFF'}` "
             f"({s.symbol_cooldown_minutes} мин)\n"
             f"Portfolio heat: `{s.portfolio_heat_limit_pct * 100:.2f}%`\n"
+            f"Max hold exit: `{'ON' if self._settings.risk_guards.enable_max_hold_exit else 'OFF'}` "
+            f"({self._settings.risk_guards.max_hold_minutes} мин)\n"
+            f"PnL exits (% equity): `{'ON' if self._settings.risk_guards.enable_pnl_pct_exit else 'OFF'}` "
+            f"(TP {self._settings.risk_guards.take_profit_pct * 100:.2f}% ~ {tp_est:.2f} USDT, "
+            f"SL {self._settings.risk_guards.stop_loss_pct * 100:.2f}% ~ {sl_est:.2f} USDT)\n"
+            f"Trailing exit: `{'ON' if self._settings.risk_guards.enable_trailing_stop_exit else 'OFF'}` "
+            f"({self._settings.risk_guards.trailing_stop_pct * 100:.1f}% retrace)\n"
+            f"Directional limit: `{'ON' if s.enable_directional_exposure_limit else 'OFF'}` "
+            f"({s.max_directional_exposure_pct * 100:.1f}% на сторону)\n"
             f"Причина блокировки: `{reason}`"
         )
 
@@ -178,6 +192,8 @@ class OrchestratorCommandsMixin:
         if not candles:
             return f"Недостаточно данных по `{symbol}` для диагностики."
         df = self._preprocessor.candles_to_dataframe(candles)
+        await self._refresh_funding_rate(symbol)
+        df = self._apply_funding_rate_column(symbol, df)
         df = self._feature_engineer.build_features(df)
 
         expected_close = (
@@ -241,6 +257,18 @@ class OrchestratorCommandsMixin:
             if norm == s_norm or norm == flat:
                 return symbol
         return None
+
+    def _tpsl_status_for_symbol(
+        self,
+        symbol: str,
+        stop_loss: Decimal | None,
+        take_profit: Decimal | None,
+    ) -> str:
+        if stop_loss is not None or take_profit is not None:
+            return "confirmed"
+        if symbol in self._pending_trading_stops:
+            return self._trading_stop_last_status.get(symbol, "pending")
+        return self._trading_stop_last_status.get(symbol, "failed")
 
     async def _cmd_help(self) -> str:
         return TelegramFormatter.format_help()

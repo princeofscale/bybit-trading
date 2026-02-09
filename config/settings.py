@@ -84,6 +84,8 @@ class RiskSettings(BaseSettings):
     max_spread_bps: Decimal = Decimal("15")
     min_liquidity_score: float = 0.30
     funding_arb_max_allocation: Decimal = Decimal("0.30")
+    enable_directional_exposure_limit: bool = True
+    max_directional_exposure_pct: Decimal = Decimal("0.60")
 
 
 class TradingSettings(BaseSettings):
@@ -116,6 +118,27 @@ class RiskGuardsSettings(BaseSettings):
     soft_stop_threshold_pct: Decimal = Decimal("0.80")
     soft_stop_min_confidence: float = 0.75
     portfolio_heat_limit_pct: Decimal = Decimal("0.08")
+    enable_directional_exposure_limit: bool = True
+    max_directional_exposure_pct: Decimal = Decimal("0.60")
+    enable_max_hold_exit: bool = True
+    max_hold_minutes: int = 90
+    enable_pnl_pct_exit: bool = True
+    take_profit_pct: Decimal = Decimal("0.006")
+    stop_loss_pct: Decimal = Decimal("0.004")
+    # Deprecated fallback for legacy envs; keep disabled by default.
+    enable_pnl_usdt_exit: bool = False
+    take_profit_usdt: Decimal = Decimal("0")
+    stop_loss_usdt: Decimal = Decimal("0")
+    enable_trailing_stop_exit: bool = True
+    trailing_stop_pct: Decimal = Decimal("0.35")
+
+
+class TradingStopSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="TRADING_STOP_")
+
+    retry_max_attempts: int = 3
+    retry_interval_sec: float = 1.0
+    confirm_timeout_sec: int = 30
 
 
 class AppSettings(BaseSettings):
@@ -130,6 +153,7 @@ class AppSettings(BaseSettings):
     redis: RedisSettings = Field(default_factory=RedisSettings)
     risk: RiskSettings = Field(default_factory=RiskSettings)
     risk_guards: RiskGuardsSettings = Field(default_factory=RiskGuardsSettings)
+    trading_stop: TradingStopSettings = Field(default_factory=TradingStopSettings)
     trading: TradingSettings = Field(default_factory=TradingSettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
 

@@ -213,6 +213,8 @@ async def test_open_request_sets_tp_sl_after_fill(settings: AppSettings, tmp_pat
         size=Decimal("0.1"),
         entry_price=Decimal("50010"),
         position_idx=1,
+        stop_loss=Decimal("49000"),
+        take_profit=Decimal("51000"),
     )
     orch._position_manager.get_all_positions.return_value = []
     orch._account_manager = MagicMock()
@@ -236,12 +238,8 @@ async def test_open_request_sets_tp_sl_after_fill(settings: AppSettings, tmp_pat
     request = orch._order_manager.submit_order.call_args.args[0]
     assert request.stop_loss is None
     assert request.take_profit is None
-    orch._rest_api.set_position_trading_stop.assert_awaited_once_with(
-        symbol="BTC/USDT:USDT",
-        position_idx=1,
-        stop_loss=Decimal("49000"),
-        take_profit=Decimal("51000"),
-    )
+    orch._rest_api.set_position_trading_stop.assert_not_awaited()
+    assert "BTC/USDT:USDT" not in orch._pending_trading_stops
 
 
 async def test_restore_strategy_states_from_positions(settings: AppSettings, tmp_path: Path) -> None:
@@ -261,6 +259,143 @@ async def test_restore_strategy_states_from_positions(settings: AppSettings, tmp
 
     orch._restore_strategy_states_from_positions()
     strategy.set_state.assert_called_with("BTC/USDT:USDT", StrategyState.LONG)
+
+
+async def test_position_exit_reason_max_hold(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    orch._settings.risk_guards.enable_max_hold_exit = True
+    orch._settings.risk_guards.max_hold_minutes = 1
+    orch._position_first_seen_ms["BTC/USDT:USDT"] = 0
+    pos = Position(
+        symbol="BTC/USDT:USDT",
+        side=PositionSide.SHORT,
+        size=Decimal("0.5"),
+        entry_price=Decimal("68000"),
+        unrealized_pnl=Decimal("5"),
+    )
+    reason = orch._position_exit_reason(pos, Decimal("10000"))
+    assert reason is not None
+    assert "max_hold_exceeded" in reason
+
+
+async def test_position_exit_reason_stop_loss_pct(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    orch._settings.risk_guards.enable_max_hold_exit = False
+    orch._settings.risk_guards.enable_pnl_pct_exit = True
+    orch._settings.risk_guards.stop_loss_pct = Decimal("0.01")
+    pos = Position(
+        symbol="BTC/USDT:USDT",
+        side=PositionSide.SHORT,
+        size=Decimal("0.5"),
+        entry_price=Decimal("68000"),
+        unrealized_pnl=Decimal("-150"),
+    )
+    reason = orch._position_exit_reason(pos, Decimal("10000"))
+    assert reason is not None
+    assert "stop_loss_pct_hit" in reason
+
+
+async def test_position_exit_reason_trailing_stop(settings: AppSettings, tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    orch._settings.risk_guards.enable_max_hold_exit = False
+    orch._settings.risk_guards.enable_pnl_pct_exit = False
+    orch._settings.risk_guards.enable_trailing_stop_exit = True
+    orch._settings.risk_guards.trailing_stop_pct = Decimal("0.30")
+    orch._position_peak_pnl["BTC/USDT:USDT"] = Decimal("200")
+    pos = Position(
+        symbol="BTC/USDT:USDT",
+        side=PositionSide.SHORT,
+        size=Decimal("0.5"),
+        entry_price=Decimal("68000"),
+        unrealized_pnl=Decimal("120"),
+    )
+    reason = orch._position_exit_reason(pos, Decimal("10000"))
+    assert reason is not None
+    assert "trailing_stop_hit" in reason
+
+
+async def test_apply_funding_rate_column_pads_history(settings: AppSettings, tmp_path: Path) -> None:
+    import pandas as pd
+
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    orch._append_funding_rate_sample("BTC/USDT:USDT", 0.0001)
+    orch._append_funding_rate_sample("BTC/USDT:USDT", 0.0002)
+
+    df = pd.DataFrame({"close": [1, 2, 3, 4]})
+    out = orch._apply_funding_rate_column("BTC/USDT:USDT", df)
+    assert "funding_rate" in out.columns
+    assert list(out["funding_rate"]) == [0.0001, 0.0001, 0.0001, 0.0002]
+
+
+async def test_ensure_position_trading_stop_keeps_pending_on_unconfirmed(
+    settings: AppSettings,
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    orch._rest_api = AsyncMock()
+    orch._position_manager = MagicMock()
+    orch._position_manager.sync_positions = AsyncMock()
+    orch._position_manager.get_position.return_value = Position(
+        symbol="BTC/USDT:USDT",
+        side=PositionSide.LONG,
+        size=Decimal("1"),
+        entry_price=Decimal("50000"),
+        position_idx=1,
+        stop_loss=None,
+        take_profit=None,
+    )
+    orch._telegram_sink = None
+    orch._queue_position_trading_stop("BTC/USDT:USDT", Decimal("49000"), Decimal("51000"))
+
+    ok = await orch._ensure_position_trading_stop("BTC/USDT:USDT")
+    assert ok is False
+    assert "BTC/USDT:USDT" in orch._pending_trading_stops
+
+
+async def test_process_pending_trading_stops_invokes_worker(
+    settings: AppSettings,
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    orch._pending_trading_stops["BTC/USDT:USDT"] = {"next_retry_ms": 0}
+    orch._ensure_position_trading_stop = AsyncMock(return_value=True)
+
+    await orch._process_pending_trading_stops()
+    orch._ensure_position_trading_stop.assert_awaited_once_with("BTC/USDT:USDT")
+
+
+async def test_cmd_positions_shows_pending_tpsl_status(
+    settings: AppSettings,
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "journal.db"
+    orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
+    orch._position_manager = MagicMock()
+    orch._position_manager.sync_positions = AsyncMock()
+    orch._position_manager.get_all_positions.return_value = [
+        Position(
+            symbol="BTC/USDT:USDT",
+            side=PositionSide.LONG,
+            size=Decimal("0.3"),
+            entry_price=Decimal("50000"),
+            unrealized_pnl=Decimal("10"),
+        )
+    ]
+    orch._pending_trading_stops["BTC/USDT:USDT"] = {"next_retry_ms": 0}
+    orch._trading_stop_last_status["BTC/USDT:USDT"] = "pending"
+    orch._account_manager = MagicMock()
+    orch._account_manager.sync_balance = AsyncMock()
+    orch._risk_manager = None
+
+    text = await orch._cmd_positions()
+    assert "TP/SL status" in text
+    assert "pending" in text
 
 
 async def test_close_request_uses_position_idx_and_no_false_close_log(

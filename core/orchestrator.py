@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -78,6 +79,13 @@ class TradingOrchestrator(
         self._periodic_tasks: list[asyncio.Task[None]] = []
         self._symbols: list[str] = []
         self._last_positions_snapshot: dict[str, object] = {}
+        self._position_first_seen_ms: dict[str, int] = {}
+        self._position_peak_pnl: dict[str, Decimal] = {}
+        self._funding_rate_history: dict[str, deque[float]] = {}
+        self._pending_trading_stops: dict[str, dict[str, object]] = {}
+        self._trading_stop_last_status: dict[str, str] = {}
+        self._funding_rate_failures: dict[str, int] = {}
+        self._funding_arb_degraded = False
         today = datetime.now(timezone.utc).date()
         self._last_daily_reset_date = today
         self._last_digest_date = today
@@ -153,6 +161,7 @@ class TradingOrchestrator(
         await self._reconcile_recovered_positions()
 
         self._periodic_tasks.append(asyncio.create_task(self._candle_poll_loop()))
+        self._periodic_tasks.append(asyncio.create_task(self._trading_stop_worker_loop()))
         self._periodic_tasks.append(asyncio.create_task(self._balance_poll_loop()))
         self._periodic_tasks.append(asyncio.create_task(self._equity_snapshot_loop()))
 
@@ -176,6 +185,8 @@ class TradingOrchestrator(
                 "soft_stop_threshold_pct": guards.soft_stop_threshold_pct,
                 "soft_stop_min_confidence": guards.soft_stop_min_confidence,
                 "portfolio_heat_limit_pct": guards.portfolio_heat_limit_pct,
+                "enable_directional_exposure_limit": guards.enable_directional_exposure_limit,
+                "max_directional_exposure_pct": guards.max_directional_exposure_pct,
             }
         )
         return RiskSettings(**risk_params)

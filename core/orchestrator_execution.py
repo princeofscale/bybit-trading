@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 from datetime import datetime, timezone
 from decimal import Decimal
 from time import monotonic
@@ -9,6 +10,7 @@ from data.models import OrderSide, OrderType
 from exchange.models import InFlightOrder, OrderRequest, Position
 from monitoring.telegram_bot import TelegramFormatter
 from strategies.base_strategy import Signal, SignalDirection, StrategyState
+from utils.time_utils import utc_now_ms
 
 logger = structlog.get_logger("orchestrator_execution")
 
@@ -40,6 +42,15 @@ class OrchestratorExecutionMixin:
                 mark_price=prev_pos.mark_price,
                 unrealized_pnl=prev_pos.unrealized_pnl,
             )
+            self._position_first_seen_ms.pop(symbol, None)
+            self._position_peak_pnl.pop(symbol, None)
+            self._pending_trading_stops.pop(symbol, None)
+            self._trading_stop_last_status.pop(symbol, None)
+        now_ms = utc_now_ms()
+        for symbol, position in current_positions.items():
+            self._position_first_seen_ms.setdefault(symbol, now_ms)
+            peak = self._position_peak_pnl.get(symbol, position.unrealized_pnl)
+            self._position_peak_pnl[symbol] = max(peak, position.unrealized_pnl)
         self._last_positions_snapshot = current_positions
 
     def _build_exchange_close_signal(self, position: Position) -> Signal:
@@ -88,6 +99,16 @@ class OrchestratorExecutionMixin:
     async def _poll_and_analyze(self, symbol: str) -> None:
         if self._trading_paused or not self._rest_api or not self._candle_buffer:
             return
+        if self._position_manager:
+            try:
+                await self._position_manager.sync_positions([symbol])
+                await self._on_positions_refreshed()
+            except Exception:
+                pass
+            position = self._position_manager.get_position(symbol)
+            if position and position.size > 0:
+                if await self._enforce_position_exit_guards(position):
+                    return
 
         candles = await self._rest_api.fetch_ohlcv(symbol, timeframe="15m", limit=5)
         if not candles:
@@ -101,6 +122,8 @@ class OrchestratorExecutionMixin:
 
         all_candles = self._candle_buffer.get_candles(symbol)
         df = self._preprocessor.candles_to_dataframe(all_candles)
+        await self._refresh_funding_rate(symbol)
+        df = self._apply_funding_rate_column(symbol, df)
         df = self._feature_engineer.build_features(df)
 
         signal = self._strategy_selector.get_best_signal(symbol, df)
@@ -187,11 +210,12 @@ class OrchestratorExecutionMixin:
                     pass
 
             if not reduce_only and (decision.stop_loss is not None or decision.take_profit is not None):
-                await self._apply_position_trading_stop(
+                self._queue_position_trading_stop(
                     symbol=signal.symbol,
                     stop_loss=decision.stop_loss,
                     take_profit=decision.take_profit,
                 )
+                await self._ensure_position_trading_stop(signal.symbol)
 
             await self._record_execution_quality(signal, decision.quantity, in_flight)
             self._sync_strategy_state(signal)
@@ -228,28 +252,59 @@ class OrchestratorExecutionMixin:
                     f"Error: `{str(exc)[:200]}`"
                 )
 
-    async def _apply_position_trading_stop(
+    def _queue_position_trading_stop(
         self,
         symbol: str,
         stop_loss: Decimal | None,
         take_profit: Decimal | None,
     ) -> None:
-        if not self._rest_api or not self._position_manager:
-            return
         if stop_loss is None and take_profit is None:
             return
+        now_ms = utc_now_ms()
+        self._pending_trading_stops[symbol] = {
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "attempts": 0,
+            "first_queued_ms": now_ms,
+            "next_retry_ms": now_ms,
+            "last_error": "",
+            "alerted_failed": False,
+        }
+        self._trading_stop_last_status[symbol] = "pending"
 
-        for _ in range(5):
-            try:
-                await self._position_manager.sync_positions([symbol])
-            except Exception:
-                await asyncio.sleep(0.3)
-                continue
+    async def _ensure_position_trading_stop(self, symbol: str) -> bool:
+        if not self._rest_api or not self._position_manager:
+            return False
+        desired = self._pending_trading_stops.get(symbol)
+        if not desired:
+            return True
+        now_ms = utc_now_ms()
+        next_retry_ms = int(desired.get("next_retry_ms", 0))
+        if now_ms < next_retry_ms:
+            return False
+
+        stop_loss = desired.get("stop_loss")
+        take_profit = desired.get("take_profit")
+        attempts = int(desired.get("attempts", 0))
+        first_queued_ms = int(desired.get("first_queued_ms", now_ms))
+        timeout_ms = self._settings.trading_stop.confirm_timeout_sec * 1000
+        max_attempts = self._settings.trading_stop.retry_max_attempts
+        retry_interval_ms = int(self._settings.trading_stop.retry_interval_sec * 1000)
+
+        error_text = ""
+        try:
+            await self._position_manager.sync_positions([symbol])
             position = self._position_manager.get_position(symbol)
-            if not position or position.size <= 0:
-                await asyncio.sleep(0.3)
-                continue
+        except Exception as exc:
+            position = None
+            error_text = str(exc)
 
+        if position and position.size > 0 and self._position_has_expected_stops(position, stop_loss, take_profit):
+            self._pending_trading_stops.pop(symbol, None)
+            self._trading_stop_last_status[symbol] = "confirmed"
+            return True
+
+        if position and position.size > 0:
             try:
                 await self._rest_api.set_position_trading_stop(
                     symbol=symbol,
@@ -258,22 +313,228 @@ class OrchestratorExecutionMixin:
                     take_profit=take_profit,
                 )
             except Exception as exc:
+                error_text = str(exc)
                 await logger.awarning(
                     "set_position_trading_stop_failed",
                     symbol=symbol,
                     position_idx=position.position_idx,
-                    error=str(exc),
+                    error=error_text,
                 )
-                if self._telegram_sink:
-                    await self._telegram_sink.send_message_now(
-                        f"⚠️ *TP/SL не установлены*\n"
-                        f"Символ: `{symbol}`\n"
-                        f"Причина: `{str(exc)[:180]}`"
-                    )
-                return
-            return
 
-        await logger.awarning("set_position_trading_stop_skipped_no_position", symbol=symbol)
+        attempts += 1
+        desired["attempts"] = attempts
+        desired["last_error"] = error_text
+
+        timed_out = (now_ms - first_queued_ms) >= timeout_ms
+        failed = attempts >= max_attempts or timed_out
+        if failed:
+            self._trading_stop_last_status[symbol] = "failed"
+            desired["next_retry_ms"] = now_ms + timeout_ms
+            alerted_failed = bool(desired.get("alerted_failed", False))
+            if not alerted_failed and self._telegram_sink:
+                await logger.awarning(
+                    "set_position_trading_stop_unconfirmed",
+                    symbol=symbol,
+                    stop_loss=str(stop_loss) if stop_loss is not None else None,
+                    take_profit=str(take_profit) if take_profit is not None else None,
+                    error=error_text,
+                )
+                await self._telegram_sink.send_message_now(
+                    f"⚠️ *TP/SL не подтверждены биржей*\n"
+                    f"Символ: `{symbol}`\n"
+                    f"SL: `{stop_loss if stop_loss is not None else '—'}` | TP: `{take_profit if take_profit is not None else '—'}`\n"
+                    f"Причина: `{error_text[:160] if error_text else 'таймаут подтверждения'}`"
+                )
+                desired["alerted_failed"] = True
+            return False
+
+        self._trading_stop_last_status[symbol] = "pending"
+        desired["next_retry_ms"] = now_ms + max(200, retry_interval_ms)
+        return False
+
+    async def _process_pending_trading_stops(self) -> None:
+        if not self._pending_trading_stops:
+            return
+        for symbol in list(self._pending_trading_stops):
+            try:
+                await self._ensure_position_trading_stop(symbol)
+            except Exception as exc:
+                await logger.awarning("pending_trading_stop_process_error", symbol=symbol, error=str(exc))
+
+    def _position_has_expected_stops(
+        self,
+        position: Position,
+        stop_loss: Decimal | None,
+        take_profit: Decimal | None,
+    ) -> bool:
+        return (
+            self._price_matches(position.stop_loss, stop_loss)
+            and self._price_matches(position.take_profit, take_profit)
+        )
+
+    def _price_matches(self, actual: Decimal | None, expected: Decimal | None) -> bool:
+        if expected is None:
+            return True
+        if actual is None:
+            return False
+        tolerance = max(Decimal("0.0001"), abs(expected) * Decimal("0.001"))
+        return abs(actual - expected) <= tolerance
+
+    async def _refresh_funding_rate(self, symbol: str) -> None:
+        if not self._rest_api:
+            return
+        try:
+            rate = await self._rest_api.fetch_funding_rate(symbol)
+        except Exception:
+            self._funding_rate_failures[symbol] = self._funding_rate_failures.get(symbol, 0) + 1
+            self._update_funding_arb_availability()
+            return
+        self._funding_rate_failures[symbol] = 0
+        self._update_funding_arb_availability()
+        self._append_funding_rate_sample(symbol, float(rate))
+
+    def _update_funding_arb_availability(self) -> None:
+        if not self._strategy_selector:
+            return
+        strategy = self._strategy_selector.strategies.get("funding_rate_arb")
+        if not strategy:
+            return
+        degraded = any(v >= 3 for v in self._funding_rate_failures.values())
+        if degraded and not self._funding_arb_degraded:
+            strategy.disable()
+            self._funding_arb_degraded = True
+            logger.warning("funding_arb_temporarily_disabled", failures=self._funding_rate_failures)
+            return
+        if not degraded and self._funding_arb_degraded:
+            strategy.enable()
+            self._funding_arb_degraded = False
+            logger.info("funding_arb_reenabled")
+
+    def _append_funding_rate_sample(self, symbol: str, funding_rate: float) -> None:
+        history = self._funding_rate_history.get(symbol)
+        if history is None:
+            history = deque(maxlen=240)
+            self._funding_rate_history[symbol] = history
+        history.append(funding_rate)
+
+    def _apply_funding_rate_column(self, symbol: str, df):
+        history = self._funding_rate_history.get(symbol)
+        if df is None or df.empty or not history:
+            return df
+        rates = list(history)
+        count = len(df)
+        if len(rates) >= count:
+            values = rates[-count:]
+        else:
+            values = [rates[0]] * (count - len(rates)) + rates
+        out = df.copy()
+        out["funding_rate"] = values
+        return out
+
+    async def _enforce_position_exit_guards(self, position: Position) -> bool:
+        equity = self._account_manager.equity if self._account_manager else Decimal("0")
+        reason = self._position_exit_reason(position, equity)
+        if not reason or not self._order_manager:
+            return False
+
+        close_direction = (
+            SignalDirection.CLOSE_LONG
+            if str(position.side).lower() == "long"
+            else SignalDirection.CLOSE_SHORT
+        )
+        close_side = self._resolve_order_side(close_direction)
+        signal = Signal(
+            symbol=position.symbol,
+            direction=close_direction,
+            confidence=1.0,
+            strategy_name="risk_exit_guard",
+            entry_price=position.mark_price or position.entry_price,
+        )
+        request = OrderRequest(
+            symbol=position.symbol,
+            side=close_side,
+            order_type=OrderType.MARKET,
+            quantity=position.size,
+            stop_loss=None,
+            take_profit=None,
+            position_idx=position.position_idx,
+            reduce_only=True,
+        )
+
+        try:
+            await self._order_manager.submit_order(request, signal.strategy_name)
+            self._trades_count += 1
+            if self._telegram_sink:
+                await self._telegram_sink.send_message_now(
+                    f"🛑 *Принудительное закрытие*\n"
+                    f"Символ: `{position.symbol}`\n"
+                    f"Причина: `{reason}`\n"
+                    f"PnL: `{position.unrealized_pnl:.4f} USDT`"
+                )
+            await self._finalize_close_after_submit(
+                signal=signal,
+                expected_close_qty=position.size,
+                previous_position=position,
+            )
+            return True
+        except Exception as exc:
+            await logger.aerror(
+                "forced_close_failed",
+                symbol=position.symbol,
+                reason=reason,
+                error=str(exc),
+            )
+            if self._telegram_sink:
+                await self._telegram_sink.send_message_now(
+                    f"🔴 *Order Failed*\n"
+                    f"Symbol: `{position.symbol}`\n"
+                    f"Причина: `{reason}`\n"
+                    f"Error: `{str(exc)[:160]}`"
+                )
+            return False
+
+    def _position_exit_reason(self, position: Position, equity: Decimal) -> str | None:
+        guards = self._settings.risk_guards
+        now_ms = utc_now_ms()
+        self._position_first_seen_ms.setdefault(position.symbol, now_ms)
+        peak = self._position_peak_pnl.get(position.symbol, position.unrealized_pnl)
+        peak = max(peak, position.unrealized_pnl)
+        self._position_peak_pnl[position.symbol] = peak
+
+        if guards.enable_max_hold_exit and guards.max_hold_minutes > 0:
+            held_ms = now_ms - self._position_first_seen_ms[position.symbol]
+            if held_ms >= guards.max_hold_minutes * 60_000:
+                return f"max_hold_exceeded: {held_ms // 60_000}m >= {guards.max_hold_minutes}m"
+
+        pnl = position.unrealized_pnl
+        if guards.enable_pnl_pct_exit and equity > 0:
+            stop_loss_usdt = equity * guards.stop_loss_pct
+            take_profit_usdt = equity * guards.take_profit_pct
+            if stop_loss_usdt > 0 and pnl <= -stop_loss_usdt:
+                return (
+                    f"stop_loss_pct_hit: {pnl:.2f} <= -{stop_loss_usdt:.2f} "
+                    f"({guards.stop_loss_pct:.2%} equity)"
+                )
+            if take_profit_usdt > 0 and pnl >= take_profit_usdt:
+                return (
+                    f"take_profit_pct_hit: {pnl:.2f} >= {take_profit_usdt:.2f} "
+                    f"({guards.take_profit_pct:.2%} equity)"
+                )
+        elif guards.enable_pnl_usdt_exit:
+            if guards.stop_loss_usdt > 0 and pnl <= -guards.stop_loss_usdt:
+                return f"stop_loss_usdt_hit: {pnl:.2f} <= -{guards.stop_loss_usdt:.2f}"
+            if guards.take_profit_usdt > 0 and pnl >= guards.take_profit_usdt:
+                return f"take_profit_usdt_hit: {pnl:.2f} >= {guards.take_profit_usdt:.2f}"
+
+        if guards.enable_trailing_stop_exit and guards.trailing_stop_pct > 0 and peak > 0:
+            retrace = peak - pnl
+            threshold = peak * guards.trailing_stop_pct
+            if retrace >= threshold:
+                return (
+                    f"trailing_stop_hit: retrace {retrace:.2f} >= {threshold:.2f} "
+                    f"(peak {peak:.2f}, pct {guards.trailing_stop_pct:.2%})"
+                )
+        return None
 
     async def _handle_reduce_only_zero_position(self, signal: Signal) -> None:
         if not self._position_manager:

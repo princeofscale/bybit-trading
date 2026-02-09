@@ -113,6 +113,13 @@ class RiskManager:
                     reason=f"soft_stop_low_confidence: {signal.confidence:.2f} < {min_conf:.2f}",
                 )
 
+        quantity = self.position_sizer.calculate_size(
+            sizing_method, equity, entry_price, stop_loss, **kwargs,
+        )
+
+        if quantity <= 0:
+            return RiskDecision(approved=False, reason="zero_quantity")
+
         new_size_estimate = equity * self._settings.max_risk_per_trade
 
         exposure_check = self.exposure_manager.check_new_position(
@@ -122,15 +129,15 @@ class RiskManager:
         if not exposure_check.allowed:
             return RiskDecision(approved=False, reason=exposure_check.reason)
 
+        direction_side = PositionSide.LONG if signal.direction == SignalDirection.LONG else PositionSide.SHORT
+        directional_check = self.exposure_manager.check_directional_exposure(
+            positions, direction_side, new_size_estimate, equity,
+        )
+        if not directional_check.allowed:
+            return RiskDecision(approved=False, reason=directional_check.reason)
+
         if self._is_portfolio_heat_exceeded(positions, equity):
             return RiskDecision(approved=False, reason="portfolio_heat_limit")
-
-        quantity = self.position_sizer.calculate_size(
-            sizing_method, equity, entry_price, stop_loss, **kwargs,
-        )
-
-        if quantity <= 0:
-            return RiskDecision(approved=False, reason="zero_quantity")
 
         return RiskDecision(
             approved=True,

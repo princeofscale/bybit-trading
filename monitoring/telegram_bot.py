@@ -99,7 +99,8 @@ class TelegramFormatter:
             return "📋 *Открытые позиции*\n\nНет открытых позиций."
         lines = ["📋 *Открытые позиции*\n"]
         for p in positions:
-            side_emoji = "🟢" if p.get("side") == "long" else "🔴"
+            side = str(p.get("side", "")).lower()
+            side_emoji = "🟢" if side == "long" else "🔴"
             pnl = p.get("pnl", Decimal(0))
             sign = "+" if pnl >= 0 else ""
             size = p.get("size", Decimal(0))
@@ -111,16 +112,22 @@ class TelegramFormatter:
             lev = p.get("leverage")
             sl = p.get("stop_loss")
             tp = p.get("take_profit")
+            tpsl_status = p.get("tpsl_status")
             liq_str = f"{liq}" if liq is not None else "—"
             lev_str = f"{lev}" if lev is not None else "—"
             sl_str = f"{sl}" if sl is not None else "—"
             tp_str = f"{tp}" if tp is not None else "—"
+            status_line = (
+                f"\n  TP/SL status: `{tpsl_status}`"
+                if tpsl_status in {"confirmed", "pending", "failed"}
+                else ""
+            )
             lines.append(
-                f"{side_emoji} *{p['symbol']}* {p.get('side', '').upper()}\n"
+                f"{side_emoji} *{p['symbol']}* {side.upper()}\n"
                 f"  Размер: `{size}` | Вход: `{entry}` | Марк: `{mark}`\n"
                 f"  PnL: `{sign}{pnl:.4f} USDT ({pnl_pct:.2f}%)`\n"
                 f"  Ликвидация: `{liq_str}` | Плечо: `{lev_str}`\n"
-                f"  SL: `{sl_str}` | TP: `{tp_str}`"
+                f"  SL: `{sl_str}` | TP: `{tp_str}`{status_line}"
             )
         return "\n".join(lines)
 

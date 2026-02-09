@@ -284,3 +284,34 @@ class TestSoftStopAndCooldown:
         decision = rm.evaluate_signal(signal, Decimal("10000"), [])
         assert decision.approved is False
         assert "low_liquidity" in decision.reason
+
+
+class TestDirectionalExposure:
+    def test_blocks_when_long_side_exceeds_limit(self, rm: RiskManager) -> None:
+        rm._settings.portfolio_heat_limit_pct = Decimal("2.0")
+        long_pos = Position(
+            symbol="ETHUSDT",
+            side=PositionSide.LONG,
+            size=Decimal("0.2"),
+            entry_price=Decimal("30000"),
+        )
+        decision = rm.evaluate_signal(_make_signal(SignalDirection.LONG), Decimal("10000"), [long_pos])
+        assert decision.approved is False
+        assert "directional_exposure_limit_long" in decision.reason
+
+    def test_allows_opposite_side_when_within_limit(self, rm: RiskManager) -> None:
+        rm._settings.portfolio_heat_limit_pct = Decimal("2.0")
+        long_pos = Position(
+            symbol="ETHUSDT",
+            side=PositionSide.LONG,
+            size=Decimal("0.2"),
+            entry_price=Decimal("30000"),
+        )
+        signal = _make_signal(
+            direction=SignalDirection.SHORT,
+            entry=Decimal("100"),
+            stop=Decimal("105"),
+            tp=Decimal("90"),
+        )
+        decision = rm.evaluate_signal(signal, Decimal("10000"), [long_pos])
+        assert decision.approved is True

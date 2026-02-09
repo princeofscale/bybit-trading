@@ -158,6 +158,18 @@ python scripts/optimize_strategy.py [data_file] [n_trials]
 - `RISK_GUARD_SOFT_STOP_THRESHOLD_PCT`
 - `RISK_GUARD_SOFT_STOP_MIN_CONFIDENCE`
 - `RISK_GUARD_PORTFOLIO_HEAT_LIMIT_PCT`
+- `RISK_GUARD_ENABLE_DIRECTIONAL_EXPOSURE_LIMIT`
+- `RISK_GUARD_MAX_DIRECTIONAL_EXPOSURE_PCT`
+- `RISK_GUARD_ENABLE_MAX_HOLD_EXIT`
+- `RISK_GUARD_MAX_HOLD_MINUTES`
+- `RISK_GUARD_ENABLE_PNL_PCT_EXIT`
+- `RISK_GUARD_TAKE_PROFIT_PCT`
+- `RISK_GUARD_STOP_LOSS_PCT`
+- `RISK_GUARD_ENABLE_TRAILING_STOP_EXIT`
+- `RISK_GUARD_TRAILING_STOP_PCT`
+- `TRADING_STOP_RETRY_MAX_ATTEMPTS`
+- `TRADING_STOP_RETRY_INTERVAL_SEC`
+- `TRADING_STOP_CONFIRM_TIMEOUT_SEC`
 
 ## Операционный регламент
 
@@ -166,6 +178,12 @@ python scripts/optimize_strategy.py [data_file] [n_trials]
 3. Переход на следующий этап только при стабильных `DD`, `PF`, `Sharpe`.
 
 При перезапуске бот синхронизирует открытые позиции с биржей, восстанавливает strategy state и делает reconcile на старте.
+
+## Безопасность ключей
+
+- Никогда не коммитьте рабочие `.env` с реальными ключами.
+- Используйте `BYBIT_TESTNET=true`/`BYBIT_DEMO_TRADING=true` на этапе отладки.
+- При любом подозрении утечки немедленно ротируйте `BYBIT_API_KEY` и `TELEGRAM_BOT_TOKEN`.
 
 ## Как улучшить доходность
 

@@ -26,6 +26,8 @@ def test_risk_defaults() -> None:
     assert risk.symbol_cooldown_minutes == 180
     assert risk.soft_stop_threshold_pct == Decimal("0.80")
     assert risk.portfolio_heat_limit_pct == Decimal("0.08")
+    assert risk.enable_directional_exposure_limit is True
+    assert risk.max_directional_exposure_pct == Decimal("0.60")
 
 
 def test_exchange_testnet_default() -> None:
@@ -39,3 +41,4 @@ def test_database_url() -> None:
     assert url.startswith("postgresql+asyncpg://")
     assert "trading_bot" in url
     assert settings.risk_guards.enable_circuit_breaker is True
+    assert settings.trading_stop.retry_max_attempts == 3

@@ -129,8 +129,12 @@ class RestApi:
         }
         if stop_loss is not None:
             payload["stopLoss"] = str(stop_loss)
+            payload["slOrderType"] = "Market"
+            payload["slTriggerBy"] = "MarkPrice"
         if take_profit is not None:
             payload["takeProfit"] = str(take_profit)
+            payload["tpOrderType"] = "Market"
+            payload["tpTriggerBy"] = "MarkPrice"
         try:
             exchange = self._client.exchange
             if hasattr(exchange, "privatePostV5PositionTradingStop"):
@@ -306,6 +310,14 @@ def _parse_order_result(data: dict[str, Any]) -> OrderResult:
 def _parse_position(data: dict[str, Any]) -> Position:
     side = data.get("side") or ""
     info = data.get("info") or {}
+    raw_sl = data.get("stopLoss", info.get("stopLoss"))
+    raw_tp = data.get("takeProfit", info.get("takeProfit"))
+    stop_loss = _safe_decimal(raw_sl) if raw_sl is not None else None
+    take_profit = _safe_decimal(raw_tp) if raw_tp is not None else None
+    if stop_loss is not None and stop_loss <= 0:
+        stop_loss = None
+    if take_profit is not None and take_profit <= 0:
+        take_profit = None
     return Position(
         symbol=data.get("symbol") or "",
         side=PositionSide.LONG if side == "long" else PositionSide.SHORT if side == "short" else PositionSide.NONE,
@@ -316,8 +328,8 @@ def _parse_position(data: dict[str, Any]) -> Position:
         leverage=_safe_decimal(data.get("leverage"), "1"),
         unrealized_pnl=_safe_decimal(data.get("unrealizedPnl")),
         realized_pnl=_safe_decimal(info.get("cumRealisedPnl")),
-        stop_loss=_safe_decimal(data.get("stopLoss")) if data.get("stopLoss") is not None else None,
-        take_profit=_safe_decimal(data.get("takeProfit")) if data.get("takeProfit") is not None else None,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
         position_idx=int(info.get("positionIdx") or 0),
     )
 
