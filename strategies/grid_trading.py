@@ -80,19 +80,27 @@ class GridTradingStrategy(BaseStrategy):
 
             if level.is_buy and crossed_down:
                 level.filled = True
+                sl_dist = atr_val * 2.0
+                tp_dist = atr_val * 2.0
                 return Signal(
                     symbol=symbol, direction=SignalDirection.LONG,
                     confidence=0.6, strategy_name=self._name,
                     entry_price=Decimal(str(round(level.price, 2))),
+                    stop_loss=Decimal(str(round(level.price - sl_dist, 2))),
+                    take_profit=Decimal(str(round(level.price + tp_dist, 2))),
                     metadata={"grid_price": level.price, "atr": atr_val},
                 )
 
             if not level.is_buy and crossed_up:
                 level.filled = True
+                sl_dist = atr_val * 2.0
+                tp_dist = atr_val * 2.0
                 return Signal(
                     symbol=symbol, direction=SignalDirection.SHORT,
                     confidence=0.6, strategy_name=self._name,
                     entry_price=Decimal(str(round(level.price, 2))),
+                    stop_loss=Decimal(str(round(level.price + sl_dist, 2))),
+                    take_profit=Decimal(str(round(level.price - tp_dist, 2))),
                     metadata={"grid_price": level.price, "atr": atr_val},
                 )
 

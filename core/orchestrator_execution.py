@@ -691,13 +691,16 @@ class OrchestratorExecutionMixin:
                 return f"take_profit_usdt_hit: {pnl:.2f} >= {guards.take_profit_usdt:.2f}"
 
         if guards.enable_trailing_stop_exit and guards.trailing_stop_pct > 0 and peak > 0:
-            retrace = peak - pnl
-            threshold = peak * guards.trailing_stop_pct
-            if retrace >= threshold:
-                return (
-                    f"trailing_stop_hit: retrace {retrace:.2f} >= {threshold:.2f} "
-                    f"(peak {peak:.2f}, pct {guards.trailing_stop_pct:.2%})"
-                )
+            min_peak_pct = getattr(guards, "trailing_stop_min_peak_pct", Decimal("0.003"))
+            min_peak_usdt = equity * min_peak_pct if equity > 0 else Decimal("0")
+            if peak >= min_peak_usdt:
+                retrace = peak - pnl
+                threshold = peak * guards.trailing_stop_pct
+                if retrace >= threshold:
+                    return (
+                        f"trailing_stop_hit: retrace {retrace:.2f} >= {threshold:.2f} "
+                        f"(peak {peak:.2f}, pct {guards.trailing_stop_pct:.2%})"
+                    )
         return None
 
     async def _handle_reduce_only_zero_position(self, signal: Signal) -> None:

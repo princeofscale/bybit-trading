@@ -61,11 +61,17 @@ class FundingRateArbStrategy(BaseStrategy):
         if confidence < self._min_confidence:
             return None
 
+        sl_pct = 0.03
+        tp_pct = 0.02
+        entry = Decimal(str(round(current_price, 2)))
+
         if current_funding > self._threshold:
             return Signal(
                 symbol=symbol, direction=SignalDirection.SHORT,
                 confidence=confidence, strategy_name=self._name,
-                entry_price=Decimal(str(round(current_price, 2))),
+                entry_price=entry,
+                stop_loss=Decimal(str(round(current_price * (1 + sl_pct), 2))),
+                take_profit=Decimal(str(round(current_price * (1 - tp_pct), 2))),
                 metadata={
                     "funding_rate": current_funding,
                     "zscore": current_zscore,
@@ -77,7 +83,9 @@ class FundingRateArbStrategy(BaseStrategy):
             return Signal(
                 symbol=symbol, direction=SignalDirection.LONG,
                 confidence=confidence, strategy_name=self._name,
-                entry_price=Decimal(str(round(current_price, 2))),
+                entry_price=entry,
+                stop_loss=Decimal(str(round(current_price * (1 - sl_pct), 2))),
+                take_profit=Decimal(str(round(current_price * (1 + tp_pct), 2))),
                 metadata={
                     "funding_rate": current_funding,
                     "zscore": current_zscore,

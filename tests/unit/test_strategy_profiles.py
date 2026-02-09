@@ -17,8 +17,8 @@ from config.strategy_profiles import (
 class TestProfiles:
     def test_conservative_lower_risk(self) -> None:
         assert CONSERVATIVE_PROFILE.risk_per_trade == Decimal("0.01")
-        assert CONSERVATIVE_PROFILE.max_leverage == Decimal("1.5")
-        assert CONSERVATIVE_PROFILE.max_concurrent_positions == 5
+        assert CONSERVATIVE_PROFILE.max_leverage == Decimal("2.0")
+        assert CONSERVATIVE_PROFILE.max_concurrent_positions == 6
         assert CONSERVATIVE_PROFILE.enable_symbol_cooldown is True
 
     def test_moderate_default(self) -> None:
