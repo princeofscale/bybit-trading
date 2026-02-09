@@ -6,6 +6,7 @@ from strategies.base_strategy import SignalDirection
 
 class OrchestratorCommandsMixin:
     async def _cmd_status(self) -> str:
+        await self._sync_for_reporting()
         equity = self._account_manager.equity if self._account_manager else Decimal(0)
         pos_count = self._position_manager.open_position_count if self._position_manager else 0
         state = "PAUSED" if self._trading_paused else "RUNNING"
@@ -22,6 +23,7 @@ class OrchestratorCommandsMixin:
         )
 
     async def _cmd_positions(self) -> str:
+        await self._sync_for_reporting()
         if not self._position_manager:
             return "Менеджер позиций недоступен."
         positions = self._position_manager.get_all_positions()
@@ -50,6 +52,7 @@ class OrchestratorCommandsMixin:
         return message
 
     async def _cmd_pnl(self) -> str:
+        await self._sync_for_reporting()
         equity = self._account_manager.equity if self._account_manager else Decimal(0)
         peak = self._account_manager.peak_equity if self._account_manager else Decimal(0)
         dd = self._account_manager.current_drawdown_pct if self._account_manager else Decimal(0)
@@ -243,6 +246,7 @@ class OrchestratorCommandsMixin:
         return TelegramFormatter.format_help()
 
     async def _build_daily_digest(self) -> str:
+        await self._sync_for_reporting()
         equity = self._account_manager.equity if self._account_manager else Decimal(0)
         dd = self._account_manager.current_drawdown_pct if self._account_manager else Decimal(0)
         unrealized = self._position_manager.total_unrealized_pnl if self._position_manager else Decimal(0)
@@ -257,3 +261,15 @@ class OrchestratorCommandsMixin:
             f"Risk state: `{state}`\n"
             f"Причина блокировки: `{reason or 'нет'}`"
         )
+
+    async def _sync_for_reporting(self) -> None:
+        if self._account_manager:
+            try:
+                await self._account_manager.sync_balance()
+            except Exception:
+                pass
+        if self._position_manager:
+            try:
+                await self._position_manager.sync_positions()
+            except Exception:
+                pass

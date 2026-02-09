@@ -156,8 +156,8 @@ class OrchestratorExecutionMixin:
             side=order_side,
             order_type=OrderType.MARKET,
             quantity=decision.quantity,
-            stop_loss=None if reduce_only else decision.stop_loss,
-            take_profit=None if reduce_only else decision.take_profit,
+            stop_loss=None,
+            take_profit=None,
             position_idx=existing_position.position_idx if (reduce_only and existing_position) else 0,
             reduce_only=reduce_only,
         )
@@ -185,6 +185,13 @@ class OrchestratorExecutionMixin:
                         await self._on_positions_refreshed()
                 except Exception:
                     pass
+
+            if not reduce_only and (decision.stop_loss is not None or decision.take_profit is not None):
+                await self._apply_position_trading_stop(
+                    symbol=signal.symbol,
+                    stop_loss=decision.stop_loss,
+                    take_profit=decision.take_profit,
+                )
 
             await self._record_execution_quality(signal, decision.quantity, in_flight)
             self._sync_strategy_state(signal)
@@ -220,6 +227,53 @@ class OrchestratorExecutionMixin:
                     f"Symbol: `{signal.symbol}`\n"
                     f"Error: `{str(exc)[:200]}`"
                 )
+
+    async def _apply_position_trading_stop(
+        self,
+        symbol: str,
+        stop_loss: Decimal | None,
+        take_profit: Decimal | None,
+    ) -> None:
+        if not self._rest_api or not self._position_manager:
+            return
+        if stop_loss is None and take_profit is None:
+            return
+
+        for _ in range(5):
+            try:
+                await self._position_manager.sync_positions([symbol])
+            except Exception:
+                await asyncio.sleep(0.3)
+                continue
+            position = self._position_manager.get_position(symbol)
+            if not position or position.size <= 0:
+                await asyncio.sleep(0.3)
+                continue
+
+            try:
+                await self._rest_api.set_position_trading_stop(
+                    symbol=symbol,
+                    position_idx=position.position_idx,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                )
+            except Exception as exc:
+                await logger.awarning(
+                    "set_position_trading_stop_failed",
+                    symbol=symbol,
+                    position_idx=position.position_idx,
+                    error=str(exc),
+                )
+                if self._telegram_sink:
+                    await self._telegram_sink.send_message_now(
+                        f"⚠️ *TP/SL не установлены*\n"
+                        f"Символ: `{symbol}`\n"
+                        f"Причина: `{str(exc)[:180]}`"
+                    )
+                return
+            return
+
+        await logger.awarning("set_position_trading_stop_skipped_no_position", symbol=symbol)
 
     async def _handle_reduce_only_zero_position(self, signal: Signal) -> None:
         if not self._position_manager:

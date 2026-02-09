@@ -110,6 +110,38 @@ class RestApi:
         except ccxt.BaseError as e:
             raise map_ccxt_error(e) from e
 
+    async def set_position_trading_stop(
+        self,
+        symbol: str,
+        position_idx: int = 0,
+        stop_loss: Decimal | None = None,
+        take_profit: Decimal | None = None,
+    ) -> None:
+        if stop_loss is None and take_profit is None:
+            return
+        await self._rate_limiter.acquire(EndpointCategory.POSITION, symbol)
+        market = self._client.exchange.market(symbol)
+        payload: dict[str, Any] = {
+            "category": "linear",
+            "symbol": market["id"],
+            "tpslMode": "Full",
+            "positionIdx": position_idx,
+        }
+        if stop_loss is not None:
+            payload["stopLoss"] = str(stop_loss)
+        if take_profit is not None:
+            payload["takeProfit"] = str(take_profit)
+        try:
+            exchange = self._client.exchange
+            if hasattr(exchange, "privatePostV5PositionTradingStop"):
+                await exchange.privatePostV5PositionTradingStop(payload)
+            elif hasattr(exchange, "private_post_v5_position_trading_stop"):
+                await exchange.private_post_v5_position_trading_stop(payload)
+            else:
+                await exchange.request("v5/position/trading-stop", "private", "POST", payload)
+        except ccxt.BaseError as e:
+            raise map_ccxt_error(e) from e
+
     async def cancel_order(self, order_id: str, symbol: str) -> OrderResult:
         await self._rate_limiter.acquire(EndpointCategory.ORDER_CANCEL, symbol)
         try:

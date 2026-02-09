@@ -180,7 +180,7 @@ async def test_resolve_order_side_for_close_short(settings: AppSettings, tmp_pat
     assert orch._resolve_order_side(SignalDirection.CLOSE_SHORT) == OrderSide.BUY
 
 
-async def test_open_request_contains_sl_tp(settings: AppSettings, tmp_path: Path) -> None:
+async def test_open_request_sets_tp_sl_after_fill(settings: AppSettings, tmp_path: Path) -> None:
     journal_path = tmp_path / "journal.db"
     orch = TradingOrchestrator(settings, MODERATE_PROFILE, journal_path)
     signal = Signal(
@@ -206,6 +206,14 @@ async def test_open_request_contains_sl_tp(settings: AppSettings, tmp_path: Path
     orch._strategy_selector = MagicMock()
     orch._strategy_selector.get_best_signal.return_value = signal
     orch._position_manager = MagicMock()
+    orch._position_manager.sync_positions = AsyncMock()
+    orch._position_manager.get_position.return_value = Position(
+        symbol="BTC/USDT:USDT",
+        side=PositionSide.LONG,
+        size=Decimal("0.1"),
+        entry_price=Decimal("50010"),
+        position_idx=1,
+    )
     orch._position_manager.get_all_positions.return_value = []
     orch._account_manager = MagicMock()
     orch._account_manager.equity = Decimal("10000")
@@ -226,8 +234,14 @@ async def test_open_request_contains_sl_tp(settings: AppSettings, tmp_path: Path
     await orch._poll_and_analyze("BTC/USDT:USDT")
 
     request = orch._order_manager.submit_order.call_args.args[0]
-    assert request.stop_loss == Decimal("49000")
-    assert request.take_profit == Decimal("51000")
+    assert request.stop_loss is None
+    assert request.take_profit is None
+    orch._rest_api.set_position_trading_stop.assert_awaited_once_with(
+        symbol="BTC/USDT:USDT",
+        position_idx=1,
+        stop_loss=Decimal("49000"),
+        take_profit=Decimal("51000"),
+    )
 
 
 async def test_restore_strategy_states_from_positions(settings: AppSettings, tmp_path: Path) -> None:
