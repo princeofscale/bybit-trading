@@ -3,15 +3,30 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from data.models import OrderSide, OrderStatus, OrderType
+from data.models import MarketCategory, OrderSide, OrderStatus, OrderType
 from exchange.errors import InsufficientFundsError
-from exchange.models import InFlightOrderStatus, OrderRequest, OrderResult
+from exchange.models import InFlightOrderStatus, OrderRequest, OrderResult, InstrumentInfo
 from exchange.order_manager import OrderManager
 
 
 @pytest.fixture
 def mock_rest_api() -> AsyncMock:
     api = AsyncMock()
+    api.fetch_instrument_info = AsyncMock(return_value=InstrumentInfo(
+        symbol="BTCUSDT",
+        ccxt_symbol="BTC/USDT:USDT",
+        category=MarketCategory.LINEAR,
+        base_coin="BTC",
+        quote_coin="USDT",
+        min_qty=Decimal("0.001"),
+        max_qty=Decimal("100"),
+        qty_step=Decimal("0.001"),
+        min_price=Decimal("0.1"),
+        max_price=Decimal("1000000"),
+        tick_size=Decimal("0.1"),
+        min_notional=Decimal("0"),
+        max_leverage=Decimal("1"),
+    ))
     api.place_order = AsyncMock(return_value=OrderResult(
         order_id="exch-001",
         symbol="BTC/USDT:USDT",
@@ -52,6 +67,7 @@ async def test_submit_order(order_manager: OrderManager, mock_rest_api: AsyncMoc
     assert in_flight.status == InFlightOrderStatus.OPEN
     assert in_flight.strategy_name == "test_strategy"
     mock_rest_api.place_order.assert_called_once()
+    mock_rest_api.fetch_instrument_info.assert_called_once_with("BTC/USDT:USDT")
 
 
 async def test_submit_order_generates_client_id(order_manager: OrderManager) -> None:
@@ -63,6 +79,33 @@ async def test_submit_order_generates_client_id(order_manager: OrderManager) -> 
     )
     in_flight = await order_manager.submit_order(request)
     assert len(in_flight.client_order_id) > 0
+
+
+async def test_submit_order_clamps_quantity_to_max(order_manager: OrderManager, mock_rest_api: AsyncMock) -> None:
+    mock_rest_api.fetch_instrument_info.return_value = InstrumentInfo(
+        symbol="ARUSDT",
+        ccxt_symbol="AR/USDT:USDT",
+        category=MarketCategory.LINEAR,
+        base_coin="AR",
+        quote_coin="USDT",
+        min_qty=Decimal("1"),
+        max_qty=Decimal("1000"),
+        qty_step=Decimal("1"),
+        min_price=Decimal("0.1"),
+        max_price=Decimal("1000000"),
+        tick_size=Decimal("0.1"),
+        min_notional=Decimal("0"),
+        max_leverage=Decimal("1"),
+    )
+    request = OrderRequest(
+        symbol="AR/USDT:USDT",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        quantity=Decimal("10000000"),
+    )
+    await order_manager.submit_order(request)
+    placed = mock_rest_api.place_order.call_args.args[0]
+    assert placed.quantity == Decimal("1000")
 
 
 async def test_submit_order_failure(order_manager: OrderManager, mock_rest_api: AsyncMock) -> None:

@@ -1,11 +1,12 @@
 import uuid
+from decimal import Decimal, ROUND_DOWN
 from time import monotonic
 
 import structlog
 
 from data.models import OrderSide, OrderStatus, OrderType
-from exchange.errors import ExchangeError
-from exchange.models import InFlightOrder, InFlightOrderStatus, OrderRequest, OrderResult
+from exchange.errors import ExchangeError, InvalidOrderError
+from exchange.models import InFlightOrder, InFlightOrderStatus, OrderRequest, OrderResult, InstrumentInfo
 from exchange.rest_api import RestApi
 from utils.time_utils import utc_now_ms
 
@@ -16,11 +17,13 @@ class OrderManager:
     def __init__(self, rest_api: RestApi) -> None:
         self._rest_api = rest_api
         self._in_flight: dict[str, InFlightOrder] = {}
+        self._instrument_cache: dict[str, InstrumentInfo] = {}
 
     async def submit_order(self, request: OrderRequest, strategy_name: str = "") -> InFlightOrder:
         submit_started = monotonic()
         client_id = request.client_order_id or str(uuid.uuid4())
         request.client_order_id = client_id
+        await self._normalize_quantity(request)
 
         in_flight = InFlightOrder(
             client_order_id=client_id,
@@ -62,6 +65,26 @@ class OrderManager:
                 error_type=e.error_type,
             )
             raise
+
+    async def _normalize_quantity(self, request: OrderRequest) -> None:
+        info = self._instrument_cache.get(request.symbol)
+        if info is None:
+            info = await self._rest_api.fetch_instrument_info(request.symbol)
+            self._instrument_cache[request.symbol] = info
+
+        qty = request.quantity
+        if info.max_qty and qty > info.max_qty:
+            qty = info.max_qty
+        if info.qty_step and info.qty_step > 0:
+            steps = (qty / info.qty_step).quantize(Decimal("1"), rounding=ROUND_DOWN)
+            qty = steps * info.qty_step
+        if info.min_qty and qty < info.min_qty:
+            raise InvalidOrderError(
+                f"order_qty_below_min: {qty} < {info.min_qty} for {request.symbol}"
+            )
+        if qty <= 0:
+            raise InvalidOrderError(f"order_qty_invalid: {qty} for {request.symbol}")
+        request.quantity = qty
 
     async def cancel_order(self, client_order_id: str) -> None:
         in_flight = self._in_flight.get(client_order_id)
