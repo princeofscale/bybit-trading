@@ -32,10 +32,10 @@ class StrategySelector:
         self._disable_win_rate = 0.30
         self._recovery_window_minutes = 180
         self._regime_map: dict[str, list[str]] = {
-            "high_vol_trend": ["trend_following", "momentum", "breakout"],
-            "low_vol_trend": ["trend_following", "ema_crossover"],
-            "high_vol_range": ["mean_reversion", "grid_trading"],
-            "low_vol_range": ["grid_trading", "mean_reversion", "funding_rate_arb"],
+            "high_vol_trend": ["trend_following", "momentum"],
+            "low_vol_trend": ["trend_following", "ema_crossover", "momentum"],
+            "high_vol_range": ["mean_reversion", "funding_rate_arb"],
+            "low_vol_range": ["mean_reversion", "grid_trading", "funding_rate_arb"],
         }
 
     @property
@@ -43,14 +43,34 @@ class StrategySelector:
         return dict(self._strategies)
 
     def detect_regime(self, df: pd.DataFrame) -> str:
-        if len(df) < 60:
+        if len(df) < 200:
             return "low_vol_range"
 
-        adx_val, _, _ = adx(df["high"], df["low"], df["close"])
-        atr_val = atr(df["high"], df["low"], df["close"])
+        close = df["close"]
+        adx_val, _, _ = adx(df["high"], df["low"], close)
+        atr_val = atr(df["high"], df["low"], close)
 
-        regimes = market_regime(df["close"], adx_val, atr_val)
-        return regimes.iloc[-1]
+        current_adx = adx_val.iloc[-1]
+        current_atr = atr_val.iloc[-1]
+        avg_atr = atr_val.rolling(50).mean().iloc[-1]
+
+        from indicators.technical import ema as ema_fn
+        ema200 = ema_fn(close, 200)
+        ema_slope = (ema200.iloc[-1] - ema200.iloc[-10]) / ema200.iloc[-10] if ema200.iloc[-10] != 0 else 0
+
+        vol_percentile = (atr_val.rank(pct=True)).iloc[-1]
+
+        high_vol = current_atr > avg_atr or vol_percentile > 0.7
+        strong_trend = current_adx > 25 and abs(ema_slope) > 0.002
+        weak_trend = current_adx > 20 and not strong_trend
+
+        if strong_trend and high_vol:
+            return "high_vol_trend"
+        if strong_trend or weak_trend:
+            return "low_vol_trend"
+        if high_vol:
+            return "high_vol_range"
+        return "low_vol_range"
 
     def select_strategies(self, df: pd.DataFrame) -> list[BaseStrategy]:
         regime = self.detect_regime(df)
@@ -129,10 +149,15 @@ class StrategySelector:
             return
 
         if win_rate < self._deweight_win_rate or expectancy < 0:
-            health.weight = 0.5
+            health.weight = max(0.3, win_rate)
             health.last_reason = (
                 f"deweighted: win_rate={win_rate:.2f}, expectancy={expectancy:.4f}"
             )
+            return
+
+        if win_rate > 0.55 and expectancy > 0:
+            health.weight = min(1.2, 0.8 + win_rate * 0.4)
+            health.last_reason = f"boosted: win_rate={win_rate:.2f}"
             return
 
         health.weight = 1.0

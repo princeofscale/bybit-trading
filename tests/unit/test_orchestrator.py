@@ -397,7 +397,7 @@ async def test_cmd_positions_shows_pending_tpsl_status(
     orch._risk_manager = None
 
     text = await orch._cmd_positions()
-    assert "TP/SL status" in text
+    assert "TP/SL" in text
     assert "pending" in text
 
 

@@ -29,6 +29,7 @@ class TestTelegramFormatter:
         assert "High Drawdown" in text
         assert "risk_manager" in text
         assert "Источник" in text
+        assert "─────" in text
 
     def test_format_trade_opened(self) -> None:
         text = TelegramFormatter.format_trade_opened(
@@ -39,6 +40,9 @@ class TestTelegramFormatter:
         assert "ЛОНГ" in text
         assert "BTCUSDT" in text
         assert "Вход" in text
+        assert "Стоп" in text
+        assert "Тейк" in text
+        assert "Стратегия" in text
 
     def test_format_trade_closed_win(self) -> None:
         text = TelegramFormatter.format_trade_closed(
@@ -59,13 +63,14 @@ class TestTelegramFormatter:
 
     def test_format_status(self) -> None:
         text = TelegramFormatter.format_status(
-            bot_state="running", equity=Decimal("50000"),
+            bot_state="RUNNING", equity=Decimal("50000"),
             open_positions=3, daily_pnl=Decimal("250"),
             active_strategies=["ema", "trend"],
         )
-        assert "running" in text
-        assert "50000" in text
+        assert "RUNNING" in text
+        assert "50,000.00" in text
         assert "Статус бота" in text
+        assert "─────" in text
 
     def test_format_status_with_session(self) -> None:
         text = TelegramFormatter.format_status(
@@ -103,11 +108,11 @@ class TestTelegramFormatter:
         assert "BTCUSDT" in text
         assert "LONG" in text
         assert "100" in text
-        assert "Марк" in text
-        assert "Ликвидация" in text
-        assert "Плечо" in text
+        assert "марк" in text
         assert "SL" in text
         assert "TP" in text
+        assert "Плечо" in text
+        assert "Ликв" in text
 
     def test_format_positions_normalizes_long_side_case(self) -> None:
         positions: list[dict[str, Any]] = [
@@ -125,7 +130,7 @@ class TestTelegramFormatter:
              "tpsl_status": "pending"},
         ]
         text = TelegramFormatter.format_positions(positions)
-        assert "TP/SL status" in text
+        assert "TP/SL" in text
         assert "pending" in text
 
     def test_format_help(self) -> None:
@@ -137,6 +142,7 @@ class TestTelegramFormatter:
         assert "/pause" in text
         assert "/resume" in text
         assert "Команды бота" in text
+        assert "─────" in text
 
     def test_format_trade_opened_short(self) -> None:
         text = TelegramFormatter.format_trade_opened(
@@ -145,6 +151,16 @@ class TestTelegramFormatter:
             take_profit=Decimal("2800"), strategy="momentum",
         )
         assert "ШОРТ" in text
+
+    def test_format_positions_count_in_header(self) -> None:
+        positions: list[dict[str, Any]] = [
+            {"symbol": "BTCUSDT", "side": "long", "size": Decimal("0.5"),
+             "entry": Decimal("50000"), "pnl": Decimal("100")},
+            {"symbol": "ETHUSDT", "side": "short", "size": Decimal("1.0"),
+             "entry": Decimal("3000"), "pnl": Decimal("-50")},
+        ]
+        text = TelegramFormatter.format_positions(positions)
+        assert "(2)" in text
 
 
 class TestTelegramAlertSink:

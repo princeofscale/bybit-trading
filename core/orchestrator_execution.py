@@ -332,9 +332,10 @@ class OrchestratorExecutionMixin:
             await logger.aerror("order_failed", symbol=signal.symbol, error=str(exc))
             if self._telegram_sink:
                 await self._telegram_sink.send_message_now(
-                    f"🔴 *Order Failed*\n"
-                    f"Symbol: `{signal.symbol}`\n"
-                    f"Error: `{str(exc)[:200]}`"
+                    f"🔴 *Ошибка ордера*\n"
+                    f"─────────────────────\n"
+                    f"📍 Символ: `{signal.symbol}`\n"
+                    f"❗ Ошибка: `{str(exc)[:200]}`"
                 )
 
     def _queue_position_trading_stop(
@@ -425,10 +426,11 @@ class OrchestratorExecutionMixin:
                     error=error_text,
                 )
                 await self._telegram_sink.send_message_now(
-                    f"⚠️ *TP/SL не подтверждены биржей*\n"
-                    f"Символ: `{symbol}`\n"
-                    f"SL: `{stop_loss if stop_loss is not None else '—'}` | TP: `{take_profit if take_profit is not None else '—'}`\n"
-                    f"Причина: `{error_text[:160] if error_text else 'таймаут подтверждения'}`"
+                    f"⚠️ *TP/SL не подтверждены*\n"
+                    f"─────────────────────\n"
+                    f"📍 Символ: `{symbol}`\n"
+                    f"🛑 SL: `{stop_loss if stop_loss is not None else '—'}` | 🎯 TP: `{take_profit if take_profit is not None else '—'}`\n"
+                    f"❗ Причина: `{error_text[:160] if error_text else 'таймаут подтверждения'}`"
                 )
                 desired["alerted_failed"] = True
             return False
@@ -629,11 +631,15 @@ class OrchestratorExecutionMixin:
             await self._order_manager.submit_order(request, signal.strategy_name)
             self._trades_count += 1
             if self._telegram_sink:
+                pnl = position.unrealized_pnl
+                pnl_icon = "🟩" if pnl > 0 else "🟥" if pnl < 0 else "⬜"
+                sign = "+" if pnl > 0 else ""
                 await self._telegram_sink.send_message_now(
                     f"🛑 *Принудительное закрытие*\n"
-                    f"Символ: `{position.symbol}`\n"
-                    f"Причина: `{reason}`\n"
-                    f"PnL: `{position.unrealized_pnl:.4f} USDT`"
+                    f"─────────────────────\n"
+                    f"📍 Символ: `{position.symbol}`\n"
+                    f"⚠️ Причина: `{reason}`\n"
+                    f"{pnl_icon} PnL: `{sign}{float(pnl):.4f} USDT`"
                 )
             await self._finalize_close_after_submit(
                 signal=signal,
@@ -650,10 +656,11 @@ class OrchestratorExecutionMixin:
             )
             if self._telegram_sink:
                 await self._telegram_sink.send_message_now(
-                    f"🔴 *Order Failed*\n"
-                    f"Symbol: `{position.symbol}`\n"
-                    f"Причина: `{reason}`\n"
-                    f"Error: `{str(exc)[:160]}`"
+                    f"🔴 *Ошибка ордера*\n"
+                    f"─────────────────────\n"
+                    f"📍 Символ: `{position.symbol}`\n"
+                    f"⚠️ Причина: `{reason}`\n"
+                    f"❗ Ошибка: `{str(exc)[:160]}`"
                 )
             return False
 
@@ -720,9 +727,10 @@ class OrchestratorExecutionMixin:
             await logger.awarning("reduce_only_no_position_after_resync", symbol=signal.symbol)
             if self._telegram_sink:
                 await self._telegram_sink.send_message_now(
-                    f"ℹ️ *Close Sync*\\n"
-                    f"Символ: `{signal.symbol}`\\n"
-                    f"Позиция уже отсутствует на бирже. Состояние синхронизировано."
+                    f"ℹ️ *Синхронизация*\n"
+                    f"─────────────────────\n"
+                    f"📍 Символ: `{signal.symbol}`\n"
+                    f"Позиция отсутствует на бирже — состояние синхронизировано"
                 )
             return
         await logger.aerror(
@@ -733,10 +741,11 @@ class OrchestratorExecutionMixin:
         )
         if self._telegram_sink:
             await self._telegram_sink.send_message_now(
-                f"🔴 *Order Failed*\\n"
-                f"Symbol: `{signal.symbol}`\\n"
-                f"Причина: `reduce-only rejected (110017), позиция всё ещё открыта`\\n"
-                f"Size: `{current_position.size}` | positionIdx: `{current_position.position_idx}`"
+                f"🔴 *Ошибка ордера*\n"
+                f"─────────────────────\n"
+                f"📍 Символ: `{signal.symbol}`\n"
+                f"⚠️ Причина: `reduce-only rejected (110017)`\n"
+                f"📂 Позиция: `{current_position.size}` | idx: `{current_position.position_idx}`"
             )
 
     def _resolve_order_side(self, direction: SignalDirection) -> OrderSide:

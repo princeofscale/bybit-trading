@@ -21,6 +21,8 @@ class StopLossTracker:
         is_long: bool,
         sl_type: StopLossType = StopLossType.FIXED,
         trailing_distance: Decimal = Decimal("0"),
+        atr_value: Decimal = Decimal("0"),
+        atr_multiplier: Decimal = Decimal("1.5"),
     ) -> None:
         self._entry = entry_price
         self._stop = stop_price
@@ -29,6 +31,9 @@ class StopLossTracker:
         self._trailing_dist = trailing_distance
         self._best_price = entry_price
         self._bars_held = 0
+        self._atr_value = atr_value
+        self._atr_multiplier = atr_multiplier
+        self._activation_pct = Decimal("0.5")
 
     @property
     def stop_price(self) -> Decimal:
@@ -53,14 +58,32 @@ class StopLossTracker:
             self._update_trailing(current_price)
 
     def _update_trailing(self, current_price: Decimal) -> None:
+        if self._trailing_dist <= 0:
+            return
+
+        profit_pct = self._unrealized_pnl_pct(current_price)
+        if profit_pct < self._activation_pct:
+            return
+
         if self._is_long:
             if current_price > self._best_price:
                 self._best_price = current_price
-                self._stop = current_price - self._trailing_dist
+                new_stop = current_price - self._trailing_dist
+                if new_stop > self._stop:
+                    self._stop = new_stop
         else:
             if current_price < self._best_price:
                 self._best_price = current_price
-                self._stop = current_price + self._trailing_dist
+                new_stop = current_price + self._trailing_dist
+                if new_stop < self._stop:
+                    self._stop = new_stop
+
+    def _unrealized_pnl_pct(self, current_price: Decimal) -> Decimal:
+        if self._entry == 0:
+            return Decimal("0")
+        if self._is_long:
+            return (current_price - self._entry) / self._entry * 100
+        return (self._entry - current_price) / self._entry * 100
 
     def is_triggered(self, current_price: Decimal) -> bool:
         if self._is_long:
@@ -149,3 +172,24 @@ class StopLossManager:
             order_id, entry_price, stop_price, is_long,
             StopLossType.TRAILING, trailing_distance,
         )
+
+    def create_atr_trailing_stop(
+        self,
+        order_id: str,
+        entry_price: Decimal,
+        atr_value: Decimal,
+        atr_multiplier: Decimal,
+        is_long: bool,
+    ) -> StopLossTracker:
+        trailing_distance = atr_value * atr_multiplier
+        if is_long:
+            stop_price = entry_price - trailing_distance
+        else:
+            stop_price = entry_price + trailing_distance
+        tracker = StopLossTracker(
+            entry_price, stop_price, is_long,
+            StopLossType.TRAILING, trailing_distance,
+            atr_value, atr_multiplier,
+        )
+        self._trackers[order_id] = tracker
+        return tracker

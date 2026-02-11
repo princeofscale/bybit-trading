@@ -34,7 +34,7 @@ class OrchestratorLoopsMixin:
                         self._last_daily_reset_date = now_date
                         if self._telegram_sink:
                             await self._telegram_sink.send_message_now(
-                                "🕛 Новый торговый день: дневные risk-ограничения сброшены.",
+                                "🕛 *Новый торговый день*\n─────────────────────\nДневные лимиты сброшены",
                             )
                     balance = await self._account_manager.sync_balance()
                     self._risk_manager.update_equity(balance.total_equity)

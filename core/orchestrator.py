@@ -239,13 +239,16 @@ class TradingOrchestrator(
 
         equity = self._account_manager.equity if self._account_manager else Decimal(0)
         pos_count = self._position_manager.open_position_count if self._position_manager else 0
+        sep = "─────────────────────"
         startup_msg = (
             f"🤖 *Бот запущен*\n"
-            f"Сессия: `{self._session_id}`\n"
-            f"Профиль: `{self._profile.name.value}`\n"
-            f"Эквити: `{equity:.2f} USDT`\n"
-            f"Позиций: `{pos_count}`\n"
-            f"Символы: `{', '.join(self._symbols)}`\n\n"
+            f"{sep}\n"
+            f"🔑 Сессия: `{self._session_id}`\n"
+            f"📐 Профиль: `{self._profile.name.value}`\n"
+            f"💰 Эквити: `{float(equity):,.2f} USDT`\n"
+            f"📂 Позиций: `{pos_count}`\n"
+            f"📡 Символы ({len(self._symbols)}): `{', '.join(self._symbols)}`\n"
+            f"{sep}\n"
             f"Команды: /help"
         )
         await self._telegram_sink.send_message_now(startup_msg)
@@ -263,11 +266,13 @@ class TradingOrchestrator(
 
         if self._telegram_sink:
             equity = self._account_manager.equity if self._account_manager else Decimal(0)
+            sep = "─────────────────────"
             await self._telegram_sink.send_message_now(
                 f"🛑 *Бот остановлен*\n"
-                f"Сессия: `{self._session_id}`\n"
-                f"Итоговое эквити: `{equity:.2f} USDT`\n"
-                f"Сигналы: `{self._signals_count}` | Сделки: `{self._trades_count}`"
+                f"{sep}\n"
+                f"🔑 Сессия: `{self._session_id}`\n"
+                f"💰 Итого эквити: `{float(equity):,.2f} USDT`\n"
+                f"📡 Сигналов: `{self._signals_count}` | Сделок: `{self._trades_count}`"
             )
             await self._telegram_sink.close()
 

@@ -142,17 +142,17 @@ class RiskGuardsSettings(BaseSettings):
     max_side_streak: int = 3
     side_imbalance_pct: Decimal = Decimal("0.20")
     enable_max_hold_exit: bool = True
-    max_hold_minutes: int = 240
+    max_hold_minutes: int = 480
     enable_pnl_pct_exit: bool = True
-    take_profit_pct: Decimal = Decimal("0.012")
-    stop_loss_pct: Decimal = Decimal("0.008")
+    take_profit_pct: Decimal = Decimal("0.02")
+    stop_loss_pct: Decimal = Decimal("0.03")
     # Deprecated fallback for legacy envs; keep disabled by default.
     enable_pnl_usdt_exit: bool = False
     take_profit_usdt: Decimal = Decimal("0")
     stop_loss_usdt: Decimal = Decimal("0")
     enable_trailing_stop_exit: bool = True
-    trailing_stop_pct: Decimal = Decimal("0.50")
-    trailing_stop_min_peak_pct: Decimal = Decimal("0.003")
+    trailing_stop_pct: Decimal = Decimal("1.50")
+    trailing_stop_min_peak_pct: Decimal = Decimal("0.005")
 
 
 class TradingStopSettings(BaseSettings):

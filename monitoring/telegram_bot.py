@@ -11,6 +11,8 @@ from monitoring.alerts import Alert, AlertSeverity
 
 logger = structlog.get_logger("telegram_bot")
 
+SEPARATOR = "─────────────────────"
+
 
 class TelegramCommand(StrEnum):
     STATUS = "/status"
@@ -25,14 +27,35 @@ class TelegramCommand(StrEnum):
     HELP = "/help"
 
 
+def _fmt_usd(value: Decimal, sign: bool = False) -> str:
+    v = float(value)
+    prefix = "+" if sign and v > 0 else ""
+    return f"{prefix}{v:,.2f}"
+
+
+def _fmt_pct(value: Decimal, sign: bool = False) -> str:
+    v = float(value * 100)
+    prefix = "+" if sign and v > 0 else ""
+    return f"{prefix}{v:.2f}%"
+
+
+def _pnl_emoji(value: Decimal) -> str:
+    if value > 0:
+        return "🟩"
+    if value < 0:
+        return "🟥"
+    return "⬜"
+
+
 class TelegramFormatter:
     @staticmethod
     def format_alert(alert: Alert) -> str:
         emoji = _severity_emoji(alert.severity)
         return (
             f"{emoji} *{alert.title}*\n"
+            f"{SEPARATOR}\n"
             f"{alert.message}\n"
-            f"Источник: `{alert.source}`"
+            f"📎 Источник: `{alert.source}`"
         )
 
     @staticmethod
@@ -41,13 +64,16 @@ class TelegramFormatter:
         entry_price: Decimal, stop_loss: Decimal,
         take_profit: Decimal, strategy: str,
     ) -> str:
-        arrow = "🟢 ЛОНГ" if side.lower() == "long" else "🔴 ШОРТ"
+        is_long = side.lower() == "long"
+        arrow = "🟢 ЛОНГ" if is_long else "🔴 ШОРТ"
         return (
             f"{arrow} *{symbol}*\n"
-            f"Вход: `{entry_price}`\n"
-            f"Размер: `{size}`\n"
-            f"SL: `{stop_loss}` | TP: `{take_profit}`\n"
-            f"Стратегия: `{strategy}`"
+            f"{SEPARATOR}\n"
+            f"📍 Вход:      `{entry_price}`\n"
+            f"📦 Размер:    `{size}`\n"
+            f"🛑 Стоп:      `{stop_loss}`\n"
+            f"🎯 Тейк:      `{take_profit}`\n"
+            f"📐 Стратегия: `{strategy}`"
         )
 
     @staticmethod
@@ -55,13 +81,15 @@ class TelegramFormatter:
         symbol: str, side: str, pnl: Decimal, pnl_pct: Decimal,
         entry_price: Decimal, exit_price: Decimal, strategy: str,
     ) -> str:
-        result = "✅ ПРИБЫЛЬ" if pnl > 0 else "❌ УБЫТОК"
-        sign = "+" if pnl > 0 else ""
+        is_win = pnl > 0
+        header = "✅ ПРИБЫЛЬ" if is_win else "❌ УБЫТОК"
+        sign = "+" if is_win else ""
         return (
-            f"{result} *{symbol}* ({side})\n"
-            f"PnL: `{sign}{pnl:.4f} USDT ({sign}{pnl_pct * 100:.2f}%)`\n"
-            f"Вход: `{entry_price}` → Выход: `{exit_price}`\n"
-            f"Стратегия: `{strategy}`"
+            f"{header} *{symbol}* ({side})\n"
+            f"{SEPARATOR}\n"
+            f"💵 PnL: `{sign}{_fmt_usd(pnl)} USDT` ({sign}{float(pnl_pct * 100):.2f}%)\n"
+            f"📍 Вход: `{entry_price}` → Выход: `{exit_price}`\n"
+            f"📐 Стратегия: `{strategy}`"
         )
 
     @staticmethod
@@ -70,17 +98,20 @@ class TelegramFormatter:
         daily_pnl: Decimal, active_strategies: list[str],
         session_id: str = "", signals_count: int = 0, trades_count: int = 0,
     ) -> str:
-        sign = "+" if daily_pnl >= 0 else ""
+        state_emoji = "🟢" if bot_state == "RUNNING" else "🟡" if bot_state == "PAUSED" else "⚪"
+        pnl_icon = _pnl_emoji(daily_pnl)
         return (
             f"📊 *Статус бота*\n"
-            f"Состояние: `{bot_state}`\n"
-            f"Сессия: `{session_id}`\n"
-            f"Эквити: `{equity:.2f} USDT`\n"
-            f"Открытых позиций: `{open_positions}`\n"
-            f"Дневной PnL: `{sign}{daily_pnl:.2f} USDT`\n"
-            f"Сигналов: `{signals_count}`\n"
-            f"Сделок: `{trades_count}`\n"
-            f"Стратегии: `{', '.join(active_strategies)}`"
+            f"{SEPARATOR}\n"
+            f"{state_emoji} Состояние: `{bot_state}`\n"
+            f"🔑 Сессия: `{session_id}`\n"
+            f"{SEPARATOR}\n"
+            f"💰 Эквити: `{_fmt_usd(equity)} USDT`\n"
+            f"📂 Позиции: `{open_positions}`\n"
+            f"{pnl_icon} Дневной PnL: `{_fmt_usd(daily_pnl, sign=True)} USDT`\n"
+            f"{SEPARATOR}\n"
+            f"📡 Сигналов: `{signals_count}` | Сделок: `{trades_count}`\n"
+            f"📐 Стратегии: `{', '.join(active_strategies) if active_strategies else '—'}`"
         )
 
     @staticmethod
@@ -89,21 +120,20 @@ class TelegramFormatter:
     ) -> str:
         return (
             f"🚨 *РИСК-АЛЕРТ*\n"
-            f"Причина: `{reason}`\n"
-            f"Текущая просадка: `{current_drawdown * 100:.2f}%`\n"
-            f"Лимит просадки: `{max_drawdown * 100:.2f}%`"
+            f"{SEPARATOR}\n"
+            f"⚠️ Причина: `{reason}`\n"
+            f"📉 Просадка: `{_fmt_pct(current_drawdown)}` / лимит `{_fmt_pct(max_drawdown)}`"
         )
 
     @staticmethod
     def format_positions(positions: list[dict[str, Any]]) -> str:
         if not positions:
-            return "📋 *Открытые позиции*\n\nНет открытых позиций."
-        lines = ["📋 *Открытые позиции*\n"]
+            return f"📋 *Открытые позиции*\n{SEPARATOR}\n\n_Нет открытых позиций_"
+        lines = [f"📋 *Открытые позиции* ({len(positions)})\n{SEPARATOR}"]
         for p in positions:
             side = str(p.get("side", "")).lower()
             side_emoji = "🟢" if side == "long" else "🔴"
             pnl = p.get("pnl", Decimal(0))
-            sign = "+" if pnl >= 0 else ""
             size = p.get("size", Decimal(0))
             entry = p.get("entry", Decimal(0))
             notional = entry * size if entry and size else Decimal("0")
@@ -114,38 +144,39 @@ class TelegramFormatter:
             sl = p.get("stop_loss")
             tp = p.get("take_profit")
             tpsl_status = p.get("tpsl_status")
-            liq_str = f"{liq}" if liq is not None else "—"
-            lev_str = f"{lev}" if lev is not None else "—"
-            sl_str = f"{sl}" if sl is not None else "—"
-            tp_str = f"{tp}" if tp is not None else "—"
-            status_line = (
-                f"\n  TP/SL status: `{tpsl_status}`"
-                if tpsl_status in {"confirmed", "pending", "failed"}
-                else ""
+            pnl_icon = _pnl_emoji(pnl)
+            sign = "+" if pnl >= 0 else ""
+
+            pos_block = (
+                f"\n{side_emoji} *{p['symbol']}* `{side.upper()}`\n"
+                f"  📦 `{size}` @ `{entry}` (марк `{mark}`)\n"
+                f"  {pnl_icon} PnL: `{sign}{float(pnl):.4f} USDT ({float(pnl_pct):.2f}%)`\n"
+                f"  🛑 SL: `{sl or '—'}` | 🎯 TP: `{tp or '—'}`\n"
+                f"  ⚙️ Плечо: `{lev or '—'}x` | Ликв: `{liq or '—'}`"
             )
-            lines.append(
-                f"{side_emoji} *{p['symbol']}* {side.upper()}\n"
-                f"  Размер: `{size}` | Вход: `{entry}` | Марк: `{mark}`\n"
-                f"  PnL: `{sign}{pnl:.4f} USDT ({pnl_pct:.2f}%)`\n"
-                f"  Ликвидация: `{liq_str}` | Плечо: `{lev_str}`\n"
-                f"  SL: `{sl_str}` | TP: `{tp_str}`{status_line}"
-            )
+            if tpsl_status in {"confirmed", "pending", "failed"}:
+                status_icon = "✅" if tpsl_status == "confirmed" else "⏳" if tpsl_status == "pending" else "❗"
+                pos_block += f"\n  {status_icon} TP/SL: `{tpsl_status}`"
+            lines.append(pos_block)
         return "\n".join(lines)
 
     @staticmethod
     def format_help() -> str:
         return (
-            "🤖 *Команды бота*\n\n"
-            "`/status` — Статус и эквити\n"
-            "`/positions` — Открытые позиции\n"
-            "`/pnl` — Сводка PnL\n"
-            "`/close_ready <symbol>` — Диагностика закрытия\n"
-            "`/entry_ready <symbol>` — Диагностика входа\n"
-            "`/guard` — Статус risk guard\n"
-            "`/pause` — Пауза торговли\n"
-            "`/resume` — Возобновить торговлю\n"
-            "`/risk` — Риск-метрики\n"
-            "`/help` — Эта справка"
+            f"🤖 *Команды бота*\n"
+            f"{SEPARATOR}\n\n"
+            "📊 `/status` — статус и эквити\n"
+            "📋 `/positions` — открытые позиции\n"
+            "💰 `/pnl` — сводка PnL + позиции\n"
+            "🛡 `/risk` — риск-параметры\n"
+            "🧯 `/guard` — статус risk guards\n"
+            f"{SEPARATOR}\n"
+            "🩺 `/close_ready <symbol>` — диагностика закрытия\n"
+            "🩺 `/entry_ready <symbol>` — диагностика входа\n"
+            f"{SEPARATOR}\n"
+            "⏸ `/pause` — приостановить торговлю\n"
+            "▶️ `/resume` — возобновить торговлю\n"
+            "❓ `/help` — эта справка"
         )
 
 
@@ -240,7 +271,7 @@ class TelegramAlertSink:
                 elif cmd == "/help":
                     await self._reply_to(chat_id, self._formatter.format_help())
                 else:
-                    await self._reply_to(chat_id, f"Неизвестная команда: {cmd}\nПопробуйте /help")
+                    await self._reply_to(chat_id, f"❓ Неизвестная команда: `{cmd}`\nИспользуйте /help")
 
         except httpx.TimeoutException:
             pass

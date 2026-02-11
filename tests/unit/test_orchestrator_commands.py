@@ -99,4 +99,4 @@ async def test_entry_ready_includes_directional_guard_block_reason(tmp_path: Pat
     text = await orch._cmd_entry_ready(["BTC/USDT:USDT"])
     assert "BLOCKED" in text
     assert "side_balancer_long" in text
-    assert "Directional guard" in text
+    assert "Side" in text
