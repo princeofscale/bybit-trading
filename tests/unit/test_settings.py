@@ -35,6 +35,12 @@ def test_exchange_testnet_default() -> None:
     assert exchange.testnet is True
 
 
+def test_exchange_testnet_accepts_flase_typo() -> None:
+    with patch.dict("os.environ", {"BYBIT_TESTNET": "flase"}):
+        exchange = ExchangeSettings()
+    assert exchange.testnet is False
+
+
 def test_database_url() -> None:
     settings = AppSettings(_env_file=None)
     url = settings.database.async_url

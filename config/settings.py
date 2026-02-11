@@ -2,7 +2,7 @@ from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +27,13 @@ class ExchangeSettings(BaseSettings):
     testnet: bool = True
     demo_trading: bool = False
     recv_window: int = Field(default=5000, ge=1000, le=10000)
+
+    @field_validator("testnet", mode="before")
+    @classmethod
+    def _normalize_testnet_bool(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip().lower() == "flase":
+            return False
+        return value
 
 
 class DatabaseSettings(BaseSettings):
