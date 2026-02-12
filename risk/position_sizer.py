@@ -84,6 +84,13 @@ class PositionSizer:
 
         return min(quantity, max_by_leverage)
 
+    def _cap_by_notional(self, quantity: Decimal, equity: Decimal, entry_price: Decimal) -> Decimal:
+        if entry_price <= 0 or equity <= 0:
+            return quantity
+        max_notional = equity * self._settings.max_leverage
+        max_qty = max_notional / entry_price
+        return min(quantity, max_qty)
+
     def calculate_size(
         self,
         method: SizingMethod,
@@ -93,21 +100,21 @@ class PositionSizer:
         **kwargs: Decimal,
     ) -> Decimal:
         if method == SizingMethod.FIXED_FRACTIONAL:
-            return self.fixed_fractional(equity, entry_price, stop_loss_price)
-
-        if method == SizingMethod.KELLY:
-            return self.kelly_criterion(
+            qty = self.fixed_fractional(equity, entry_price, stop_loss_price)
+        elif method == SizingMethod.KELLY:
+            qty = self.kelly_criterion(
                 equity, entry_price, stop_loss_price,
                 kwargs.get("win_rate", Decimal("0.5")),
                 kwargs.get("avg_win", Decimal("1")),
                 kwargs.get("avg_loss", Decimal("1")),
             )
-
-        if method == SizingMethod.VOLATILITY:
-            return self.volatility_based(
+        elif method == SizingMethod.VOLATILITY:
+            qty = self.volatility_based(
                 equity, entry_price,
                 kwargs.get("atr_value", Decimal("0")),
                 kwargs.get("atr_multiplier", Decimal("2")),
             )
+        else:
+            return Decimal("0")
 
-        return Decimal("0")
+        return self._cap_by_notional(qty, equity, entry_price)

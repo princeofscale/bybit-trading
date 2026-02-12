@@ -222,19 +222,35 @@ class RestApi:
 
     async def fetch_instrument_info(self, symbol: str) -> InstrumentInfo:
         market = self._client.exchange.market(symbol)
+        raw_info = market.get("info", {})
+        lot_filter = raw_info.get("lotSizeFilter", {})
+        raw_max_qty = lot_filter.get("maxOrderQty") or lot_filter.get("maxMktOrderQty")
+        ccxt_max_qty = market["limits"]["amount"]["max"]
+        if raw_max_qty:
+            max_qty = Decimal(str(raw_max_qty))
+        elif ccxt_max_qty:
+            max_qty = Decimal(str(ccxt_max_qty))
+        else:
+            max_qty = Decimal("999999")
+        raw_min_qty = lot_filter.get("minOrderQty")
+        ccxt_min_qty = market["limits"]["amount"]["min"]
+        min_qty = Decimal(str(raw_min_qty)) if raw_min_qty else Decimal(str(ccxt_min_qty or 0))
+        raw_step = lot_filter.get("qtyStep")
+        ccxt_step = market["precision"]["amount"]
+        qty_step = Decimal(str(raw_step)) if raw_step else Decimal(str(ccxt_step or "0.001"))
         return InstrumentInfo(
             symbol=market["id"],
             ccxt_symbol=symbol,
             category=MarketCategory.LINEAR if market.get("linear") else MarketCategory.SPOT,
             base_coin=market["base"],
             quote_coin=market["quote"],
-            min_qty=Decimal(str(market["limits"]["amount"]["min"] or 0)),
-            max_qty=Decimal(str(market["limits"]["amount"]["max"] or 999999)),
-            qty_step=Decimal(str(market["precision"]["amount"] or "0.001")),
+            min_qty=min_qty,
+            max_qty=max_qty,
+            qty_step=qty_step,
             min_price=Decimal(str(market["limits"]["price"]["min"] or 0)),
             max_price=Decimal(str(market["limits"]["price"]["max"] or 999999)),
             tick_size=Decimal(str(market["precision"]["price"] or "0.01")),
-            max_leverage=Decimal(str(market.get("info", {}).get("leverageFilter", {}).get("maxLeverage", "1"))),
+            max_leverage=Decimal(str(raw_info.get("leverageFilter", {}).get("maxLeverage", "1"))),
         )
 
 

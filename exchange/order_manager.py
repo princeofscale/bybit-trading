@@ -73,8 +73,16 @@ class OrderManager:
             self._instrument_cache[request.symbol] = info
 
         qty = request.quantity
+        original_qty = qty
         if info.max_qty and qty > info.max_qty:
             qty = info.max_qty
+            await logger.awarning(
+                "qty_clamped_to_max",
+                symbol=request.symbol,
+                original=str(original_qty),
+                clamped=str(qty),
+                max_qty=str(info.max_qty),
+            )
         if info.qty_step and info.qty_step > 0:
             steps = (qty / info.qty_step).quantize(Decimal("1"), rounding=ROUND_DOWN)
             qty = steps * info.qty_step
