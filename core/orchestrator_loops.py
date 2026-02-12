@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 
 import structlog
 
@@ -15,7 +16,7 @@ class OrchestratorLoopsMixin:
             try:
                 for symbol in self._symbols:
                     await self._poll_and_analyze(symbol)
-                await asyncio.sleep(60)
+                await asyncio.sleep(30)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -110,3 +111,61 @@ class OrchestratorLoopsMixin:
             except Exception as exc:
                 await logger.aerror("telegram_poll_error", error=str(exc))
                 await asyncio.sleep(10)
+
+    async def _ml_retrain_loop(self) -> None:
+        await asyncio.sleep(60)
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                seconds_until_3am = ((3 - now.hour) % 24) * 3600 - now.minute * 60 - now.second
+                if seconds_until_3am <= 0:
+                    seconds_until_3am += 86400
+                await asyncio.sleep(seconds_until_3am)
+                await self._run_ml_retrain()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                await logger.aerror("ml_retrain_loop_error", error=str(exc))
+                await asyncio.sleep(3600)
+
+    async def _run_ml_retrain(self) -> None:
+        await logger.ainfo("ml_retrain_started")
+        try:
+            result = await asyncio.to_thread(self._ml_retrain_sync)
+            await logger.ainfo("ml_retrain_finished", **result)
+            if result.get("status") == "trained" and result.get("model_id"):
+                await self._load_ml_model()
+                if self._telegram_sink:
+                    acc = result.get("test_accuracy", 0)
+                    cv = result.get("cv_accuracy", 0)
+                    n = result.get("samples", 0)
+                    await self._telegram_sink.send_message_now(
+                        f"🧠 *ML модель обновлена*\n"
+                        f"─────────────────────\n"
+                        f"📊 Сэмплов: `{n}`\n"
+                        f"🎯 Accuracy: `{acc:.4f}`\n"
+                        f"📈 CV Accuracy: `{cv:.4f}`\n"
+                        f"🆔 Модель: `{result.get('model_id')}`"
+                    )
+            elif result.get("status") == "trained" and self._telegram_sink:
+                acc = result.get("test_accuracy", 0)
+                await self._telegram_sink.send_message_now(
+                    f"🧠 *ML обучение завершено*\n"
+                    f"─────────────────────\n"
+                    f"⚠️ Модель НЕ сохранена (accuracy `{acc:.4f}` <= 0.52)"
+                )
+        except Exception as exc:
+            await logger.aerror("ml_retrain_failed", error=str(exc))
+
+    def _ml_retrain_sync(self) -> dict:
+        from scripts.enrich_and_train import enrich_and_train
+
+        db_path = self._journal_path
+        data_dir = self._settings.data_dir
+        model_dir = data_dir / self._settings.ml.model_dir
+        return enrich_and_train(
+            db_path=db_path,
+            data_dir=data_dir,
+            model_dir=model_dir,
+            min_samples=100,
+        )

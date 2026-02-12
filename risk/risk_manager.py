@@ -138,6 +138,12 @@ class RiskManager:
         if not directional_check.allowed:
             return RiskDecision(approved=False, reason=directional_check.reason)
 
+        corr_check = self.exposure_manager.check_correlation_group(
+            positions, signal.symbol, direction_side,
+        )
+        if not corr_check.allowed:
+            return RiskDecision(approved=False, reason=corr_check.reason)
+
         side_balance_check = self._check_side_balancer(positions, direction_side, equity)
         if not side_balance_check.allowed:
             return RiskDecision(approved=False, reason=side_balance_check.reason)

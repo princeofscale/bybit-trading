@@ -24,7 +24,7 @@ class MomentumStrategy(BaseStrategy):
         adx_min_threshold: float = 20.0,
         ema_fast: int = 21,
         ema_slow: int = 50,
-        min_confidence: float = 0.55,
+        min_confidence: float = 0.40,
     ) -> None:
         super().__init__("momentum", symbols)
         self._roc_period = roc_period

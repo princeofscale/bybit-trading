@@ -24,7 +24,7 @@ class MeanReversionStrategy(BaseStrategy):
         trend_ema_period: int = 200,
         adx_max_threshold: float = 30.0,
         use_dynamic_thresholds: bool = True,
-        min_confidence: float = 0.55,
+        min_confidence: float = 0.40,
     ) -> None:
         super().__init__("mean_reversion", symbols)
         self._rsi_period = rsi_period

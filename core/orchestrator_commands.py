@@ -49,7 +49,7 @@ class OrchestratorCommandsMixin:
         message = TelegramFormatter.format_positions(pos_data)
         if self._risk_manager:
             state = self._risk_manager.risk_state()
-            state_icon = "🟢" if state == "normal" else "🟡" if state == "caution" else "🔴"
+            state_icon = "🟢" if state.upper() == "NORMAL" else "🟡" if state.upper() in ("CAUTION", "SOFT_STOP") else "🔴"
             message += f"\n\n{state_icon} Риск: `{state}`"
             block_reason = self._risk_manager.block_reason()
             if block_reason:
@@ -67,6 +67,9 @@ class OrchestratorCommandsMixin:
         realized_today = daily["realized_pnl"]
         total_today = realized_today + unrealized
 
+        from_peak = equity - peak
+        from_peak_icon = _pnl_emoji(from_peak)
+
         risk_limit = self._risk_manager._settings.max_drawdown_pct if self._risk_manager else None
         dd_icon = "🟢" if dd < Decimal("0.05") else "🟡" if dd < Decimal("0.10") else "🔴"
 
@@ -76,23 +79,22 @@ class OrchestratorCommandsMixin:
         else:
             risk_line = f"{dd_icon} Просадка: `{_fmt_pct(dd)}`"
 
-        total_icon = _pnl_emoji(total_today)
         realized_icon = _pnl_emoji(realized_today)
         unrealized_icon = _pnl_emoji(unrealized)
 
         state = self._risk_manager.risk_state() if self._risk_manager else "N/A"
-        state_icon = "🟢" if state == "normal" else "🟡" if state == "caution" else "🔴"
+        state_icon = "🟢" if state.upper() == "NORMAL" else "🟡" if state.upper() in ("CAUTION", "SOFT_STOP") else "🔴"
 
         summary = (
             f"💰 *Сводка PnL*\n"
             f"{SEPARATOR}\n"
             f"💎 Эквити: `{_fmt_usd(equity)} USDT`\n"
             f"🏔 Пик: `{_fmt_usd(peak)} USDT`\n"
+            f"{from_peak_icon} От пика: `{_fmt_usd(from_peak, sign=True)} USDT`\n"
             f"{risk_line}\n"
             f"{SEPARATOR}\n"
-            f"{realized_icon} Реализ. (день): `{_fmt_usd(realized_today, sign=True)} USDT`\n"
-            f"{unrealized_icon} Нереализ.: `{_fmt_usd(unrealized, sign=True)} USDT` ({float(unrealized_pct):.2f}%)\n"
-            f"{total_icon} Итого за день: `{_fmt_usd(total_today, sign=True)} USDT`\n"
+            f"{realized_icon} Реализ. (сегодня): `{_fmt_usd(realized_today, sign=True)} USDT`\n"
+            f"{unrealized_icon} Нереализ. (откр.): `{_fmt_usd(unrealized, sign=True)} USDT` ({float(unrealized_pct):.2f}%)\n"
             f"{SEPARATOR}\n"
             f"{state_icon} Риск: `{state}`\n"
             f"📡 Сигналов: `{int(daily['signals'])}` | Сделок: `{int(daily['trades'])}`"
@@ -141,7 +143,7 @@ class OrchestratorCommandsMixin:
         dd = self._account_manager.current_drawdown_pct if self._account_manager else Decimal(0)
         dd_icon = "🟢" if dd < Decimal("0.05") else "🟡" if dd < Decimal("0.10") else "🔴"
         state = self._risk_manager.risk_state()
-        state_icon = "🟢" if state == "normal" else "🟡" if state == "caution" else "🔴"
+        state_icon = "🟢" if state.upper() == "NORMAL" else "🟡" if state.upper() in ("CAUTION", "SOFT_STOP") else "🔴"
         paused = "⏸ ДА" if self._trading_paused else "▶️ НЕТ"
         return (
             f"🛡 *Риск-параметры*\n"
@@ -170,7 +172,7 @@ class OrchestratorCommandsMixin:
         tp_est = equity * g.take_profit_pct if equity > 0 else Decimal(0)
         sl_est = equity * g.stop_loss_pct if equity > 0 else Decimal(0)
 
-        state_icon = "🟢" if state == "normal" else "🟡" if state == "caution" else "🔴"
+        state_icon = "🟢" if state.upper() == "NORMAL" else "🟡" if state.upper() in ("CAUTION", "SOFT_STOP") else "🔴"
 
         def _on_off(val: bool) -> str:
             return "✅" if val else "❌"
@@ -224,7 +226,7 @@ class OrchestratorCommandsMixin:
         if not self._rest_api or not self._preprocessor or not self._feature_engineer or not self._strategy_selector:
             return "⚠️ Рыночные компоненты не инициализированы"
 
-        candles = await self._rest_api.fetch_ohlcv(symbol, timeframe="15m", limit=120)
+        candles = await self._rest_api.fetch_ohlcv(symbol, timeframe=self._settings.trading.default_timeframe, limit=120)
         if not candles:
             return f"⚠️ Недостаточно данных по `{symbol}`"
         df = self._preprocessor.candles_to_dataframe(candles)
@@ -304,7 +306,7 @@ class OrchestratorCommandsMixin:
         if not self._rest_api or not self._preprocessor or not self._feature_engineer or not self._strategy_selector:
             return "⚠️ Рыночные компоненты не инициализированы"
 
-        candles = await self._rest_api.fetch_ohlcv(symbol, timeframe="15m", limit=120)
+        candles = await self._rest_api.fetch_ohlcv(symbol, timeframe=self._settings.trading.default_timeframe, limit=120)
         if not candles:
             return f"⚠️ Недостаточно данных по `{symbol}`"
         df = self._preprocessor.candles_to_dataframe(candles)
@@ -421,7 +423,7 @@ class OrchestratorCommandsMixin:
         unrealized = self._position_manager.total_unrealized_pnl if self._position_manager else Decimal(0)
         state = self._risk_manager.risk_state() if self._risk_manager else "N/A"
         reason = self._risk_manager.block_reason() if self._risk_manager else ""
-        state_icon = "🟢" if state == "normal" else "🟡" if state == "caution" else "🔴"
+        state_icon = "🟢" if state.upper() == "NORMAL" else "🟡" if state.upper() in ("CAUTION", "SOFT_STOP") else "🔴"
         dd_icon = "🟢" if dd < Decimal("0.05") else "🟡" if dd < Decimal("0.10") else "🔴"
         return (
             f"🗓 *Дневной отчёт*\n"

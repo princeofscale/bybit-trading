@@ -80,11 +80,11 @@ class RiskSettings(BaseSettings):
     max_leverage: Decimal = Decimal("3.0")
     max_concurrent_positions: int = 10
     enable_circuit_breaker: bool = True
-    circuit_breaker_consecutive_losses: int = 3
-    circuit_breaker_cooldown_hours: int = 4
+    circuit_breaker_consecutive_losses: int = 5
+    circuit_breaker_cooldown_hours: int = 2
     enable_daily_loss_limit: bool = True
     enable_symbol_cooldown: bool = True
-    symbol_cooldown_minutes: int = 180
+    symbol_cooldown_minutes: int = 30
     soft_stop_threshold_pct: Decimal = Decimal("0.80")
     soft_stop_min_confidence: float = 0.75
     portfolio_heat_limit_pct: Decimal = Decimal("0.08")
@@ -94,7 +94,7 @@ class RiskSettings(BaseSettings):
     enable_directional_exposure_limit: bool = True
     max_directional_exposure_pct: Decimal = Decimal("0.60")
     enable_side_balancer: bool = True
-    max_side_streak: int = 3
+    max_side_streak: int = 5
     side_imbalance_pct: Decimal = Decimal("0.20")
 
 
@@ -109,11 +109,18 @@ class TradingSettings(BaseSettings):
     enable_mtf_confirm: bool = True
     mtf_confirm_tf: str = "1h"
     mtf_confirm_min_bars: int = 120
-    mtf_confirm_adx_min: Decimal = Decimal("20")
+    mtf_confirm_adx_min: Decimal = Decimal("15")
     close_missing_confirmations: int = 2
     close_dedup_ttl_sec: int = 120
     enable_exchange_close_fallback: bool = False
     enable_short_relax_if_long_streak: bool = True
+
+    @property
+    def effective_mtf_tf(self) -> str:
+        if self.mtf_confirm_tf != "1h":
+            return self.mtf_confirm_tf
+        tf_map = {"1m": "5m", "3m": "15m", "5m": "15m", "15m": "1h", "30m": "4h", "1h": "4h"}
+        return tf_map.get(self.default_timeframe, "1h")
 
 
 class StatusSettings(BaseSettings):
@@ -134,19 +141,19 @@ class RiskGuardsSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="RISK_GUARD_")
 
     enable_circuit_breaker: bool = True
-    circuit_breaker_consecutive_losses: int = 3
-    circuit_breaker_cooldown_hours: int = 4
+    circuit_breaker_consecutive_losses: int = 5
+    circuit_breaker_cooldown_hours: int = 2
     enable_daily_loss_limit: bool = True
     daily_loss_limit_pct: Decimal = Decimal("0.03")
     enable_symbol_cooldown: bool = True
-    symbol_cooldown_minutes: int = 180
+    symbol_cooldown_minutes: int = 30
     soft_stop_threshold_pct: Decimal = Decimal("0.80")
     soft_stop_min_confidence: float = 0.75
     portfolio_heat_limit_pct: Decimal = Decimal("0.08")
     enable_directional_exposure_limit: bool = True
     max_directional_exposure_pct: Decimal = Decimal("0.60")
     enable_side_balancer: bool = True
-    max_side_streak: int = 3
+    max_side_streak: int = 5
     side_imbalance_pct: Decimal = Decimal("0.20")
     enable_max_hold_exit: bool = True
     max_hold_minutes: int = 480
@@ -160,6 +167,24 @@ class RiskGuardsSettings(BaseSettings):
     enable_trailing_stop_exit: bool = True
     trailing_stop_pct: Decimal = Decimal("1.50")
     trailing_stop_min_peak_pct: Decimal = Decimal("0.005")
+    enable_partial_tp: bool = True
+    partial_tp_ratio: Decimal = Decimal("0.6")
+    partial_tp_close_pct: Decimal = Decimal("0.5")
+    enable_dca: bool = True
+    dca_trigger_loss_pct: Decimal = Decimal("1.5")
+    dca_add_size_pct: Decimal = Decimal("0.5")
+    dca_max_adds: int = 1
+    dca_max_hold_minutes: int = 240
+
+
+class MLSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="ML_")
+
+    enabled: bool = False
+    model_dir: str = "models"
+    confidence_threshold: float = 0.6
+    boost_agreement: float = 0.2
+    penalize_disagreement: float = 0.3
 
 
 class TradingStopSettings(BaseSettings):
@@ -186,6 +211,7 @@ class AppSettings(BaseSettings):
     trading: TradingSettings = Field(default_factory=TradingSettings)
     status: StatusSettings = Field(default_factory=StatusSettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
+    ml: MLSettings = Field(default_factory=MLSettings)
 
     log_level: LogLevel = LogLevel.INFO
     log_format: LogFormat = LogFormat.JSON

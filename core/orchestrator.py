@@ -92,6 +92,9 @@ class TradingOrchestrator(
         self._trading_stop_last_status: dict[str, str] = {}
         self._funding_rate_failures: dict[str, int] = {}
         self._funding_arb_degraded = False
+        self._partial_tp_done: dict[str, bool] = {}
+        self._dca_done: dict[str, int] = {}
+        self._original_entry_qty: dict[str, Decimal] = {}
         today = datetime.now(timezone.utc).date()
         self._last_daily_reset_date = today
         self._last_digest_date = today
@@ -137,14 +140,14 @@ class TradingOrchestrator(
             if symbol not in self._symbols:
                 self._symbols.append(symbol)
 
-        self._candle_buffer = CandleBuffer(max_candles=500)
+        self._candle_buffer = CandleBuffer(max_candles=1000)
         self._preprocessor = CandlePreprocessor()
         self._feature_engineer = FeatureEngineer()
 
         valid_symbols: list[str] = []
         for symbol in self._symbols:
             try:
-                candles = await self._rest_api.fetch_ohlcv(symbol, timeframe="15m", limit=200)
+                candles = await self._rest_api.fetch_ohlcv(symbol, timeframe=self._settings.trading.default_timeframe, limit=200)
             except Exception as exc:
                 await logger.awarning("symbol_init_skipped", symbol=symbol, error=str(exc))
                 continue
@@ -172,6 +175,8 @@ class TradingOrchestrator(
             total_equity=balance.total_equity,
         )
 
+        await self._load_ml_model()
+
         self._event_bus = EventBus()
         await self._event_bus.start()
 
@@ -187,7 +192,45 @@ class TradingOrchestrator(
         if self._telegram_sink:
             self._periodic_tasks.append(asyncio.create_task(self._telegram_poll_loop()))
 
+        if self._settings.ml.enabled:
+            self._periodic_tasks.append(asyncio.create_task(self._ml_retrain_loop()))
+
         await logger.ainfo("orchestrator_started")
+
+    async def _load_ml_model(self) -> None:
+        if not self._settings.ml.enabled:
+            return
+        if not self._strategy_selector:
+            return
+        try:
+            from ml.model_registry import ModelRegistry
+            from ml.prediction import PredictionService
+
+            model_dir = self._settings.data_dir / self._settings.ml.model_dir
+            registry = ModelRegistry(model_dir)
+            entry = registry.get_latest("direction_classifier")
+            if not entry:
+                await logger.awarning("ml_model_not_found", model_id="direction_classifier")
+                return
+            model = registry.load_model(entry.model_id)
+            service = PredictionService(
+                model=model,
+                feature_names=entry.feature_names,
+                confidence_threshold=self._settings.ml.confidence_threshold,
+            )
+            self._strategy_selector.set_ml_service(
+                service,
+                boost=self._settings.ml.boost_agreement,
+                penalize=self._settings.ml.penalize_disagreement,
+                threshold=self._settings.ml.confidence_threshold,
+            )
+            await logger.ainfo(
+                "ml_model_loaded",
+                model_id=entry.model_id,
+                metrics=entry.metrics,
+            )
+        except Exception as exc:
+            await logger.awarning("ml_model_load_failed", error=str(exc))
 
     def _build_risk_settings(self) -> RiskSettings:
         risk_params = profile_to_risk_settings(self._profile)

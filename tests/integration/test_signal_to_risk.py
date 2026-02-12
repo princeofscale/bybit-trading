@@ -135,7 +135,7 @@ class TestEmaSignalToRisk:
         assert decision.approved is True
 
     def test_circuit_breaker_blocks_after_losses(self, risk_manager: RiskManager) -> None:
-        for _ in range(3):
+        for _ in range(5):
             risk_manager.record_trade_result(is_win=False)
 
         signal = Signal(
@@ -197,6 +197,7 @@ class TestMultiStrategySignals:
         risk_manager.record_trade_result(is_win=False)
         assert risk_manager.is_trading_allowed() is True
 
+        risk_manager.record_trade_result(is_win=False)
         risk_manager.record_trade_result(is_win=False)
         risk_manager.record_trade_result(is_win=False)
         assert risk_manager.is_trading_allowed() is False

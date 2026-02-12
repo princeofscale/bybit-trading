@@ -5,7 +5,7 @@ import pytest
 from config.settings import RiskSettings
 from exchange.models import Position
 from data.models import PositionSide
-from risk.exposure_manager import ExposureManager
+from risk.exposure_manager import CORRELATION_GROUPS, MAX_SAME_DIRECTION_PER_GROUP, ExposureManager
 
 
 def _make_position(
@@ -162,3 +162,89 @@ class TestPortfolioAnalytics:
     def test_portfolio_risk_not_acceptable(self, mgr: ExposureManager) -> None:
         positions = [_make_position("BTC", Decimal("1"), Decimal("50000"))]
         assert mgr.is_portfolio_risk_acceptable(positions, Decimal("50000")) is False
+
+
+def _make_directional_position(
+    symbol: str,
+    side: PositionSide,
+    size: Decimal = Decimal("0.1"),
+    entry: Decimal = Decimal("100"),
+) -> Position:
+    return Position(
+        symbol=symbol,
+        side=side,
+        size=size,
+        entry_price=entry,
+    )
+
+
+class TestCorrelationGroups:
+    def test_all_15_pairs_covered(self) -> None:
+        all_symbols = set()
+        for symbols in CORRELATION_GROUPS.values():
+            all_symbols.update(symbols)
+        from config.trading_pairs import get_ccxt_symbols
+        configured = set(get_ccxt_symbols())
+        assert configured.issubset(all_symbols)
+
+    def test_allows_first_position_in_group(self, mgr: ExposureManager) -> None:
+        check = mgr.check_correlation_group(
+            [], "SOL/USDT:USDT", PositionSide.LONG,
+        )
+        assert check.allowed is True
+
+    def test_allows_second_same_direction_in_group(self, mgr: ExposureManager) -> None:
+        positions = [
+            _make_directional_position("SOL/USDT:USDT", PositionSide.LONG),
+        ]
+        check = mgr.check_correlation_group(
+            positions, "AVAX/USDT:USDT", PositionSide.LONG,
+        )
+        assert check.allowed is True
+
+    def test_blocks_third_same_direction_in_group(self, mgr: ExposureManager) -> None:
+        positions = [
+            _make_directional_position("SOL/USDT:USDT", PositionSide.LONG),
+            _make_directional_position("AVAX/USDT:USDT", PositionSide.LONG),
+        ]
+        check = mgr.check_correlation_group(
+            positions, "SUI/USDT:USDT", PositionSide.LONG,
+        )
+        assert check.allowed is False
+        assert "correlation_group_alt_l1" in check.reason
+
+    def test_allows_opposite_direction_in_group(self, mgr: ExposureManager) -> None:
+        positions = [
+            _make_directional_position("SOL/USDT:USDT", PositionSide.LONG),
+            _make_directional_position("AVAX/USDT:USDT", PositionSide.LONG),
+        ]
+        check = mgr.check_correlation_group(
+            positions, "SUI/USDT:USDT", PositionSide.SHORT,
+        )
+        assert check.allowed is True
+
+    def test_allows_different_group(self, mgr: ExposureManager) -> None:
+        positions = [
+            _make_directional_position("SOL/USDT:USDT", PositionSide.LONG),
+            _make_directional_position("AVAX/USDT:USDT", PositionSide.LONG),
+        ]
+        check = mgr.check_correlation_group(
+            positions, "BTC/USDT:USDT", PositionSide.LONG,
+        )
+        assert check.allowed is True
+
+    def test_unknown_symbol_always_allowed(self, mgr: ExposureManager) -> None:
+        check = mgr.check_correlation_group(
+            [], "UNKNOWN/USDT:USDT", PositionSide.LONG,
+        )
+        assert check.allowed is True
+
+    def test_ignores_zero_size_positions(self, mgr: ExposureManager) -> None:
+        positions = [
+            _make_directional_position("SOL/USDT:USDT", PositionSide.LONG, size=Decimal("0")),
+            _make_directional_position("AVAX/USDT:USDT", PositionSide.LONG, size=Decimal("0")),
+        ]
+        check = mgr.check_correlation_group(
+            positions, "SUI/USDT:USDT", PositionSide.LONG,
+        )
+        assert check.allowed is True

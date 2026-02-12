@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 from collections import deque
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 import pandas as pd
 import structlog
@@ -8,8 +11,11 @@ import structlog
 from indicators.custom import market_regime
 from indicators.technical import adx
 from indicators.volatility import atr
-from strategies.base_strategy import BaseStrategy, Signal
+from strategies.base_strategy import BaseStrategy, Signal, SignalDirection
 from utils.time_utils import utc_now_ms
+
+if TYPE_CHECKING:
+    from ml.prediction import PredictionService
 
 logger = structlog.get_logger("strategy_selector")
 
@@ -37,10 +43,26 @@ class StrategySelector:
             "high_vol_range": ["mean_reversion", "funding_rate_arb"],
             "low_vol_range": ["mean_reversion", "grid_trading", "funding_rate_arb"],
         }
+        self._ml_service: PredictionService | None = None
+        self._ml_boost: float = 0.2
+        self._ml_penalize: float = 0.3
+        self._ml_threshold: float = 0.6
 
     @property
     def strategies(self) -> dict[str, BaseStrategy]:
         return dict(self._strategies)
+
+    def set_ml_service(
+        self,
+        service: PredictionService | None,
+        boost: float = 0.2,
+        penalize: float = 0.3,
+        threshold: float = 0.6,
+    ) -> None:
+        self._ml_service = service
+        self._ml_boost = boost
+        self._ml_penalize = penalize
+        self._ml_threshold = threshold
 
     def detect_regime(self, df: pd.DataFrame) -> str:
         if len(df) < 200:
@@ -95,6 +117,13 @@ class StrategySelector:
         active_strategies = self.select_strategies(df)
         signals: list[Signal] = []
 
+        ml_prediction = None
+        if self._ml_service is not None:
+            try:
+                ml_prediction = self._ml_service.predict(df)
+            except Exception:
+                ml_prediction = None
+
         for strategy in active_strategies:
             if symbol not in strategy.symbols:
                 continue
@@ -104,10 +133,37 @@ class StrategySelector:
                 adjusted = max(0.0, min(1.0, signal.confidence * health.weight))
                 signal.confidence = adjusted
                 signal.metadata["strategy_weight"] = float(health.weight)
+                signal = self._apply_ml_adjustment(signal, ml_prediction)
                 signals.append(signal)
 
         signals.sort(key=lambda s: s.confidence, reverse=True)
         return signals
+
+    def _apply_ml_adjustment(self, signal: Signal, ml_prediction: object | None) -> Signal:
+        if ml_prediction is None:
+            return signal
+        ml_dir = ml_prediction.direction
+        ml_conf = ml_prediction.confidence
+        ml_prob = ml_prediction.probability
+
+        signal.metadata["ml_direction"] = {"long": 1.0, "short": -1.0, "neutral": 0.0}.get(ml_dir, 0.0)
+        signal.metadata["ml_confidence"] = ml_conf
+        signal.metadata["ml_probability"] = ml_prob
+
+        if ml_conf < self._ml_threshold:
+            return signal
+
+        signal_is_long = signal.direction in (SignalDirection.LONG,)
+        signal_is_short = signal.direction in (SignalDirection.SHORT,)
+        ml_agrees = (signal_is_long and ml_dir == "long") or (signal_is_short and ml_dir == "short")
+        ml_disagrees = (signal_is_long and ml_dir == "short") or (signal_is_short and ml_dir == "long")
+
+        if ml_agrees:
+            signal.confidence = min(1.0, signal.confidence + self._ml_boost)
+        elif ml_disagrees:
+            signal.confidence = max(0.0, signal.confidence - self._ml_penalize)
+
+        return signal
 
     def get_best_signal(self, symbol: str, df: pd.DataFrame) -> Signal | None:
         signals = self.generate_signals(symbol, df)

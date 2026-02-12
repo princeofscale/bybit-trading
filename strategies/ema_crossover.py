@@ -20,7 +20,7 @@ class EmaCrossoverStrategy(BaseStrategy):
         adx_min_threshold: float = 20.0,
         volume_confirmation: bool = True,
         volume_sma_period: int = 20,
-        min_confidence: float = 0.55,
+        min_confidence: float = 0.40,
     ) -> None:
         super().__init__("ema_crossover", symbols)
         self._fast = fast_period

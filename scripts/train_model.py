@@ -30,16 +30,16 @@ def train(
     print("-" * 50)
 
     feature_eng = MLFeatureEngineer()
-    features_df = feature_eng.compute_all(df)
+    features_df = feature_eng.build_features(df)
     features_df = feature_eng.clean_features(features_df)
 
     target_builder = TargetBuilder()
     if target_type == "binary_direction":
-        target = target_builder.binary_direction(df["close"])
+        target = target_builder.binary_direction(df)
     elif target_type == "forward_return":
-        target = target_builder.forward_return(df["close"])
+        target = target_builder.forward_return(df)
     else:
-        target = target_builder.binary_direction(df["close"])
+        target = target_builder.binary_direction(df)
 
     features_df = features_df.iloc[:len(target)]
     target = target.iloc[:len(features_df)]
@@ -77,12 +77,15 @@ def train(
 
     if save_model:
         registry = ModelRegistry(Path("models"))
-        version = registry.save(
+        entry = registry.register(
             model=model,
-            name=f"{model_type}_{target_type}",
-            metadata={"accuracy": metrics.accuracy, "features": list(x_train.columns)},
+            model_id=f"{model_type}_{target_type}",
+            model_type=model_type,
+            metrics=metrics.to_dict(),
+            feature_names=list(x_train.columns),
+            params={"target_type": target_type},
         )
-        print(f"Model saved: version {version}")
+        print(f"Model saved: {entry.model_id}")
 
 
 def main() -> None:

@@ -8,6 +8,17 @@ from exchange.models import Position
 
 logger = structlog.get_logger("exposure_manager")
 
+CORRELATION_GROUPS: dict[str, list[str]] = {
+    "btc_eth": ["BTC/USDT:USDT", "ETH/USDT:USDT"],
+    "alt_l1": ["SOL/USDT:USDT", "AVAX/USDT:USDT", "SUI/USDT:USDT", "APT/USDT:USDT"],
+    "alt_l2": ["OP/USDT:USDT", "ARB/USDT:USDT", "MATIC/USDT:USDT"],
+    "defi": ["LINK/USDT:USDT", "DOT/USDT:USDT", "ADA/USDT:USDT"],
+    "meme": ["DOGE/USDT:USDT"],
+    "storage": ["AR/USDT:USDT"],
+    "legacy": ["XRP/USDT:USDT"],
+}
+MAX_SAME_DIRECTION_PER_GROUP = 2
+
 
 class ExposureCheck:
     def __init__(self, allowed: bool, reason: str = "") -> None:
@@ -122,6 +133,35 @@ class ExposureManager:
             return Decimal("0")
         exposure = self.total_exposure_usd(positions)
         return exposure / equity
+
+    def check_correlation_group(
+        self,
+        positions: list[Position],
+        new_symbol: str,
+        new_direction: PositionSide,
+    ) -> ExposureCheck:
+        group_name = ""
+        for name, symbols in CORRELATION_GROUPS.items():
+            if new_symbol in symbols:
+                group_name = name
+                break
+        if not group_name:
+            return ExposureCheck(True)
+
+        group_symbols = set(CORRELATION_GROUPS[group_name])
+        same_dir_count = 0
+        for p in positions:
+            if p.symbol not in group_symbols or p.size <= 0:
+                continue
+            if p.side == new_direction:
+                same_dir_count += 1
+
+        if same_dir_count >= MAX_SAME_DIRECTION_PER_GROUP:
+            return ExposureCheck(
+                False,
+                f"correlation_group_{group_name}: {same_dir_count} same-direction >= {MAX_SAME_DIRECTION_PER_GROUP}",
+            )
+        return ExposureCheck(True)
 
     def is_portfolio_risk_acceptable(
         self, positions: list[Position], equity: Decimal,

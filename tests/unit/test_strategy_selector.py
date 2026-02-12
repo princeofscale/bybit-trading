@@ -150,3 +150,70 @@ def test_strategy_disables_after_severe_degradation(selector: StrategySelector) 
     df = _make_df()
     sigs = selector.generate_signals("BTC/USDT:USDT", df)
     assert all(s.strategy_name != "always_long" for s in sigs)
+
+
+class FakePrediction:
+    def __init__(self, direction: str, confidence: float, probability: float) -> None:
+        self.direction = direction
+        self.confidence = confidence
+        self.probability = probability
+
+
+class FakeMLService:
+    def __init__(self, direction: str = "long", confidence: float = 0.8, probability: float = 0.7) -> None:
+        self._pred = FakePrediction(direction, confidence, probability)
+
+    def predict(self, df: pd.DataFrame) -> FakePrediction:
+        return self._pred
+
+
+def test_ml_service_boosts_agreement(selector: StrategySelector) -> None:
+    ml_service = FakeMLService(direction="long", confidence=0.8, probability=0.7)
+    selector.set_ml_service(ml_service, boost=0.2, penalize=0.3, threshold=0.6)
+    df = _make_df()
+    signals = selector.generate_signals("BTC/USDT:USDT", df)
+    long_sig = next((s for s in signals if s.direction == SignalDirection.LONG), None)
+    assert long_sig is not None
+    assert long_sig.confidence == min(1.0, 0.8 + 0.2)
+    assert long_sig.metadata.get("ml_direction") == 1.0
+    assert long_sig.metadata.get("ml_confidence") == 0.8
+
+
+def test_ml_service_penalizes_disagreement(selector: StrategySelector) -> None:
+    ml_service = FakeMLService(direction="short", confidence=0.8, probability=0.3)
+    selector.set_ml_service(ml_service, boost=0.2, penalize=0.3, threshold=0.6)
+    df = _make_df()
+    signals = selector.generate_signals("BTC/USDT:USDT", df)
+    long_sig = next((s for s in signals if s.direction == SignalDirection.LONG), None)
+    assert long_sig is not None
+    assert long_sig.confidence == max(0.0, 0.8 - 0.3)
+
+
+def test_ml_service_no_effect_below_threshold(selector: StrategySelector) -> None:
+    ml_service = FakeMLService(direction="short", confidence=0.3, probability=0.3)
+    selector.set_ml_service(ml_service, boost=0.2, penalize=0.3, threshold=0.6)
+    df = _make_df()
+    signals = selector.generate_signals("BTC/USDT:USDT", df)
+    long_sig = next((s for s in signals if s.direction == SignalDirection.LONG), None)
+    assert long_sig is not None
+    assert long_sig.confidence == 0.8
+
+
+def test_ml_service_none_no_effect(selector: StrategySelector) -> None:
+    selector.set_ml_service(None)
+    df = _make_df()
+    signals = selector.generate_signals("BTC/USDT:USDT", df)
+    long_sig = next((s for s in signals if s.direction == SignalDirection.LONG), None)
+    assert long_sig is not None
+    assert long_sig.confidence == 0.8
+
+
+def test_ml_metadata_stored_in_signal(selector: StrategySelector) -> None:
+    ml_service = FakeMLService(direction="long", confidence=0.9, probability=0.85)
+    selector.set_ml_service(ml_service, boost=0.2, penalize=0.3, threshold=0.6)
+    df = _make_df()
+    signals = selector.generate_signals("BTC/USDT:USDT", df)
+    sig = signals[0]
+    assert "ml_direction" in sig.metadata
+    assert "ml_confidence" in sig.metadata
+    assert "ml_probability" in sig.metadata

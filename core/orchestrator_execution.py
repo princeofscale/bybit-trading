@@ -5,10 +5,12 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from time import monotonic
 
+import numpy as np
 import structlog
 
 from data.models import OrderSide, OrderType
 from exchange.models import InFlightOrder, OrderRequest, Position
+from ml.features import MLFeatureEngineer, get_all_feature_names
 from monitoring.telegram_bot import TelegramFormatter
 from strategies.base_strategy import Signal, SignalDirection, StrategyState
 from utils.time_utils import utc_now_ms
@@ -49,6 +51,9 @@ class OrchestratorExecutionMixin:
                 self._pending_trading_stops.pop(symbol, None)
                 self._trading_stop_last_status.pop(symbol, None)
                 self._missing_position_counts.pop(symbol, None)
+                self._partial_tp_done.pop(symbol, None)
+                self._dca_done.pop(symbol, None)
+                self._original_entry_qty.pop(symbol, None)
                 continue
             misses = self._missing_position_counts.get(symbol, 0) + 1
             self._missing_position_counts[symbol] = misses
@@ -76,6 +81,9 @@ class OrchestratorExecutionMixin:
             self._pending_trading_stops.pop(symbol, None)
             self._trading_stop_last_status.pop(symbol, None)
             self._missing_position_counts.pop(symbol, None)
+            self._partial_tp_done.pop(symbol, None)
+            self._dca_done.pop(symbol, None)
+            self._original_entry_qty.pop(symbol, None)
         now_ms = utc_now_ms()
         for symbol, position in current_positions.items():
             self._missing_position_counts.pop(symbol, None)
@@ -166,10 +174,11 @@ class OrchestratorExecutionMixin:
                 pass
             position = self._position_manager.get_position(symbol)
             if position and position.size > 0:
+                await self._try_partial_take_profit(position)
                 if await self._enforce_position_exit_guards(position):
                     return
 
-        candles = await self._rest_api.fetch_ohlcv(symbol, timeframe="15m", limit=5)
+        candles = await self._rest_api.fetch_ohlcv(symbol, timeframe=self._settings.trading.default_timeframe, limit=5)
         if not candles:
             return
 
@@ -184,6 +193,11 @@ class OrchestratorExecutionMixin:
         await self._refresh_funding_rate(symbol)
         df = self._apply_funding_rate_column(symbol, df)
         df = self._feature_engineer.build_features(df)
+
+        if self._position_manager:
+            pos_for_dca = self._position_manager.get_position(symbol)
+            if pos_for_dca and pos_for_dca.size > 0:
+                await self._evaluate_dca(symbol, df)
 
         signal = self._strategy_selector.get_best_signal(symbol, df)
         if not signal:
@@ -206,7 +220,7 @@ class OrchestratorExecutionMixin:
                     rejection_reason=mtf_reason,
                     session_id=self._session_id,
                 )
-            await self._record_ml_candidate(signal, approved=False, rejection_reason=mtf_reason, features=mtf_meta)
+            await self._record_ml_candidate(signal, approved=False, rejection_reason=mtf_reason, features=mtf_meta, df=df)
             return
 
         self._signals_count += 1
@@ -241,6 +255,7 @@ class OrchestratorExecutionMixin:
             approved=decision.approved,
             rejection_reason="" if decision.approved else (decision.reason or ""),
             features=mtf_meta,
+            df=df,
         )
 
         if not decision.approved:
@@ -302,6 +317,8 @@ class OrchestratorExecutionMixin:
 
             await self._record_execution_quality(signal, decision.quantity, in_flight)
             self._sync_strategy_state(signal)
+            if not reduce_only:
+                self._original_entry_qty[signal.symbol] = decision.quantity
             if not reduce_only and self._risk_manager:
                 self._risk_manager.record_entry_direction(signal.direction)
 
@@ -529,7 +546,7 @@ class OrchestratorExecutionMixin:
         bars = max(80, int(self._settings.trading.mtf_confirm_min_bars))
         candles = await self._rest_api.fetch_ohlcv(
             signal.symbol,
-            timeframe=self._settings.trading.mtf_confirm_tf,
+            timeframe=self._settings.trading.effective_mtf_tf,
             limit=bars,
         )
         if not candles or len(candles) < bars:
@@ -570,6 +587,7 @@ class OrchestratorExecutionMixin:
         approved: bool,
         rejection_reason: str,
         features: dict[str, float] | None = None,
+        df: object | None = None,
     ) -> None:
         payload = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -588,6 +606,10 @@ class OrchestratorExecutionMixin:
         if features:
             payload["features"] = features
 
+        ml_features = self._extract_ml_features(df)
+        if ml_features:
+            payload["ml_features"] = ml_features
+
         target = self._settings.data_dir / "ml_candidates.jsonl"
         target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -596,6 +618,203 @@ class OrchestratorExecutionMixin:
                 fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
         await asyncio.to_thread(_append)
+
+    def _extract_ml_features(self, df: object | None) -> dict[str, float] | None:
+        if df is None:
+            return None
+        try:
+            import pandas as pd
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                return None
+            eng = MLFeatureEngineer()
+            featured = eng.build_features(df)
+            cleaned = eng.clean_features(featured)
+            if cleaned.empty:
+                return None
+            last_row = cleaned.iloc[-1]
+            result: dict[str, float] = {}
+            for col in get_all_feature_names():
+                if col in last_row.index:
+                    val = last_row[col]
+                    if isinstance(val, (int, float, np.integer, np.floating)):
+                        result[col] = float(val)
+            return result if result else None
+        except Exception:
+            return None
+
+    async def _evaluate_dca(self, symbol: str, df) -> bool:
+        guards = self._settings.risk_guards
+        if not guards.enable_dca:
+            return False
+        if not self._position_manager or not self._order_manager or not self._rest_api:
+            return False
+
+        position = self._position_manager.get_position(symbol)
+        if not position or position.size <= 0 or position.entry_price <= 0:
+            return False
+
+        dca_count = self._dca_done.get(symbol, 0)
+        if dca_count >= guards.dca_max_adds:
+            return False
+
+        now_ms = utc_now_ms()
+        first_seen = self._position_first_seen_ms.get(symbol, now_ms)
+        held_minutes = (now_ms - first_seen) / 60_000
+        if held_minutes > guards.dca_max_hold_minutes:
+            return False
+
+        side_str = str(position.side).lower()
+        if side_str == "long":
+            pnl_pct = ((position.mark_price or position.entry_price) - position.entry_price) / position.entry_price * 100
+        else:
+            pnl_pct = (position.entry_price - (position.mark_price or position.entry_price)) / position.entry_price * 100
+
+        if pnl_pct > -float(guards.dca_trigger_loss_pct):
+            return False
+
+        if not self._strategy_selector or df is None:
+            return False
+
+        signal = self._strategy_selector.get_best_signal(symbol, df)
+        if not signal:
+            return False
+
+        expected_dir = SignalDirection.LONG if side_str == "long" else SignalDirection.SHORT
+        if signal.direction != expected_dir:
+            return False
+        if signal.confidence < 0.5:
+            return False
+
+        original_qty = self._original_entry_qty.get(symbol, position.size)
+        dca_qty = original_qty * guards.dca_add_size_pct
+        if dca_qty <= 0:
+            return False
+
+        order_side = self._resolve_order_side(signal.direction)
+        request = OrderRequest(
+            symbol=symbol,
+            side=order_side,
+            order_type=OrderType.MARKET,
+            quantity=dca_qty,
+            stop_loss=None,
+            take_profit=None,
+            position_idx=position.position_idx,
+            reduce_only=False,
+        )
+
+        try:
+            await self._order_manager.submit_order(request, "dca")
+            self._dca_done[symbol] = dca_count + 1
+            self._trades_count += 1
+
+            await asyncio.sleep(0.5)
+            await self._sync_positions_and_reconcile([symbol])
+            updated_pos = self._position_manager.get_position(symbol)
+            if updated_pos and updated_pos.size > 0 and signal.stop_loss:
+                await self._rest_api.set_position_trading_stop(
+                    symbol=symbol,
+                    position_idx=updated_pos.position_idx,
+                    stop_loss=signal.stop_loss,
+                    take_profit=updated_pos.take_profit,
+                )
+
+            await logger.ainfo(
+                "dca_executed",
+                symbol=symbol,
+                added_qty=str(dca_qty),
+                dca_count=dca_count + 1,
+            )
+            if self._telegram_sink:
+                await self._telegram_sink.send_message_now(
+                    f"📊 *DCA*\n"
+                    f"─────────────────────\n"
+                    f"📍 Символ: `{symbol}`\n"
+                    f"📦 Добавлено: `{float(dca_qty):.6f}`\n"
+                    f"📈 PnL: `{pnl_pct:.2f}%`\n"
+                    f"🔁 DCA #{dca_count + 1}/{guards.dca_max_adds}"
+                )
+            return True
+        except Exception as exc:
+            await logger.aerror("dca_failed", symbol=symbol, error=str(exc))
+            return False
+
+    async def _try_partial_take_profit(self, position: Position) -> bool:
+        guards = self._settings.risk_guards
+        if not guards.enable_partial_tp:
+            return False
+        if self._partial_tp_done.get(position.symbol, False):
+            return False
+        if not self._order_manager or not position.take_profit or not position.entry_price:
+            return False
+        if position.entry_price <= 0:
+            return False
+
+        side_str = str(position.side).lower()
+        if side_str == "long":
+            tp_distance = position.take_profit - position.entry_price
+            current_distance = (position.mark_price or position.entry_price) - position.entry_price
+        else:
+            tp_distance = position.entry_price - position.take_profit
+            current_distance = position.entry_price - (position.mark_price or position.entry_price)
+
+        if tp_distance <= 0:
+            return False
+
+        ratio = current_distance / tp_distance
+        if ratio < float(guards.partial_tp_ratio):
+            return False
+
+        close_qty = position.size * guards.partial_tp_close_pct
+        if close_qty <= 0:
+            return False
+
+        close_direction = (
+            SignalDirection.CLOSE_LONG if side_str == "long" else SignalDirection.CLOSE_SHORT
+        )
+        close_side = self._resolve_order_side(close_direction)
+
+        request = OrderRequest(
+            symbol=position.symbol,
+            side=close_side,
+            order_type=OrderType.MARKET,
+            quantity=close_qty,
+            stop_loss=None,
+            take_profit=None,
+            position_idx=position.position_idx,
+            reduce_only=True,
+        )
+
+        try:
+            await self._order_manager.submit_order(request, "partial_tp")
+            self._partial_tp_done[position.symbol] = True
+            self._trades_count += 1
+
+            breakeven_sl = position.entry_price
+            await self._rest_api.set_position_trading_stop(
+                symbol=position.symbol,
+                position_idx=position.position_idx,
+                stop_loss=breakeven_sl,
+                take_profit=position.take_profit,
+            )
+
+            await logger.ainfo(
+                "partial_tp_executed",
+                symbol=position.symbol,
+                closed_qty=str(close_qty),
+                new_sl="breakeven",
+            )
+            if self._telegram_sink:
+                await self._telegram_sink.send_message_now(
+                    f"🎯 *Частичный TP*\n"
+                    f"─────────────────────\n"
+                    f"📍 Символ: `{position.symbol}`\n"
+                    f"📦 Закрыто: `{float(close_qty):.6f}` ({float(guards.partial_tp_close_pct * 100):.0f}%)\n"
+                    f"🛡 SL → breakeven: `{float(breakeven_sl):.4f}`"
+                )
+            return True
+        except Exception as exc:
+            await logger.aerror("partial_tp_failed", symbol=position.symbol, error=str(exc))
+            return False
 
     async def _enforce_position_exit_guards(self, position: Position) -> bool:
         equity = self._account_manager.equity if self._account_manager else Decimal("0")

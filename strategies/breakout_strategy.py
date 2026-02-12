@@ -20,7 +20,7 @@ class BreakoutStrategy(BaseStrategy):
         volume_sma_period: int = 20,
         volume_threshold: float = 1.5,
         rsi_period: int = 14,
-        min_confidence: float = 0.55,
+        min_confidence: float = 0.40,
         squeeze_lookback: int = 10,
     ) -> None:
         super().__init__("breakout", symbols)

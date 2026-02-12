@@ -18,19 +18,19 @@ class TestProfiles:
     def test_conservative_lower_risk(self) -> None:
         assert CONSERVATIVE_PROFILE.risk_per_trade == Decimal("0.01")
         assert CONSERVATIVE_PROFILE.max_leverage == Decimal("2.0")
-        assert CONSERVATIVE_PROFILE.max_concurrent_positions == 5
+        assert CONSERVATIVE_PROFILE.max_concurrent_positions == 8
         assert CONSERVATIVE_PROFILE.enable_symbol_cooldown is True
 
     def test_moderate_default(self) -> None:
         assert MODERATE_PROFILE.risk_per_trade == Decimal("0.015")
         assert MODERATE_PROFILE.max_leverage == Decimal("3.0")
-        assert MODERATE_PROFILE.max_concurrent_positions == 8
+        assert MODERATE_PROFILE.max_concurrent_positions == 12
         assert MODERATE_PROFILE.soft_stop_threshold_pct == Decimal("0.80")
 
     def test_aggressive_higher_risk(self) -> None:
         assert AGGRESSIVE_PROFILE.risk_per_trade == Decimal("0.03")
         assert AGGRESSIVE_PROFILE.max_leverage == Decimal("5.0")
-        assert AGGRESSIVE_PROFILE.max_concurrent_positions == 12
+        assert AGGRESSIVE_PROFILE.max_concurrent_positions == 18
         assert AGGRESSIVE_PROFILE.portfolio_heat_limit_pct == Decimal("0.10")
 
     def test_risk_ordering(self) -> None:
@@ -76,9 +76,9 @@ class TestProfileToSettings:
         assert settings["max_risk_per_trade"] == Decimal("0.015")
         assert settings["max_leverage"] == Decimal("3.0")
         assert settings["max_drawdown_pct"] == Decimal("0.12")
-        assert settings["max_concurrent_positions"] == 8
+        assert settings["max_concurrent_positions"] == 12
         assert settings["enable_circuit_breaker"] is True
-        assert settings["symbol_cooldown_minutes"] == 120
+        assert settings["symbol_cooldown_minutes"] == 30
 
     def test_conservative_settings(self) -> None:
         settings = profile_to_risk_settings(CONSERVATIVE_PROFILE)
