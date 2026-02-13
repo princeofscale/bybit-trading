@@ -177,6 +177,14 @@ class RiskGuardsSettings(BaseSettings):
     dca_max_hold_minutes: int = 240
 
 
+class DashboardSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="DASHBOARD_")
+
+    enabled: bool = False
+    host: str = "0.0.0.0"
+    port: int = 8080
+
+
 class MLSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ML_")
 
@@ -211,6 +219,7 @@ class AppSettings(BaseSettings):
     trading: TradingSettings = Field(default_factory=TradingSettings)
     status: StatusSettings = Field(default_factory=StatusSettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
+    dashboard: DashboardSettings = Field(default_factory=DashboardSettings)
     ml: MLSettings = Field(default_factory=MLSettings)
 
     log_level: LogLevel = LogLevel.INFO

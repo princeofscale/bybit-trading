@@ -115,9 +115,13 @@ class RiskManager:
                     reason=f"soft_stop_low_confidence: {signal.confidence:.2f} < {min_conf:.2f}",
                 )
 
+        eff_lev = self.effective_leverage()
+        orig_lev = self._settings.max_leverage
+        self._settings.max_leverage = eff_lev
         quantity = self.position_sizer.calculate_size(
             sizing_method, equity, entry_price, stop_loss, **kwargs,
         )
+        self._settings.max_leverage = orig_lev
 
         if quantity <= 0:
             return RiskDecision(approved=False, reason="zero_quantity")
@@ -209,6 +213,19 @@ class RiskManager:
 
     def initialize(self, equity: Decimal) -> None:
         self.drawdown_monitor.initialize(equity)
+
+    def effective_leverage(self) -> Decimal:
+        base = self._settings.max_leverage
+        reduction = Decimal("0")
+        dd = self.drawdown_monitor.current_drawdown_pct
+        if dd >= Decimal("0.10"):
+            reduction += Decimal("1.0")
+        elif dd >= Decimal("0.05"):
+            reduction += Decimal("0.5")
+        if not self.circuit_breaker.is_trading_allowed():
+            reduction += Decimal("0.5")
+        result = base - reduction
+        return max(Decimal("1"), result)
 
     def is_trading_allowed(self) -> bool:
         if self.drawdown_monitor.is_halted:

@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from decimal import Decimal, ROUND_DOWN
 from time import monotonic
@@ -11,6 +12,9 @@ from exchange.rest_api import RestApi
 from utils.time_utils import utc_now_ms
 
 logger = structlog.get_logger("order_manager")
+
+MAX_RETRIES = 3
+RETRY_DELAYS = [0.5, 1.0, 2.0]
 
 
 class OrderManager:
@@ -36,35 +40,53 @@ class OrderManager:
         )
         self._in_flight[client_id] = in_flight
 
-        try:
-            result = await self._rest_api.place_order(request)
-            in_flight.exchange_order_id = result.order_id
-            in_flight.filled_qty = result.filled_qty
-            in_flight.avg_fill_price = result.avg_fill_price
-            in_flight.fee = result.fee
-            in_flight.status = InFlightOrderStatus.OPEN
-            in_flight.last_update = utc_now_ms()
-            await logger.ainfo(
-                "order_submitted",
-                client_id=client_id,
-                exchange_id=result.order_id,
-                symbol=request.symbol,
-                side=request.side,
-                type=request.order_type,
-                qty=str(request.quantity),
-                price=str(request.price) if request.price else "market",
-                ack_latency_ms=round((monotonic() - submit_started) * 1000, 3),
-            )
-            return in_flight
-        except ExchangeError as e:
-            in_flight.status = InFlightOrderStatus.DONE
-            await logger.aerror(
-                "order_submit_failed",
-                client_id=client_id,
-                error=str(e),
-                error_type=e.error_type,
-            )
-            raise
+        last_error: ExchangeError | None = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                result = await self._rest_api.place_order(request)
+                in_flight.exchange_order_id = result.order_id
+                in_flight.filled_qty = result.filled_qty
+                in_flight.avg_fill_price = result.avg_fill_price
+                in_flight.fee = result.fee
+                in_flight.status = InFlightOrderStatus.OPEN
+                in_flight.last_update = utc_now_ms()
+                await logger.ainfo(
+                    "order_submitted",
+                    client_id=client_id,
+                    exchange_id=result.order_id,
+                    symbol=request.symbol,
+                    side=request.side,
+                    type=request.order_type,
+                    qty=str(request.quantity),
+                    price=str(request.price) if request.price else "market",
+                    ack_latency_ms=round((monotonic() - submit_started) * 1000, 3),
+                    attempt=attempt + 1,
+                )
+                return in_flight
+            except ExchangeError as e:
+                last_error = e
+                if not e.is_retryable or attempt >= MAX_RETRIES - 1:
+                    in_flight.status = InFlightOrderStatus.DONE
+                    await logger.aerror(
+                        "order_submit_failed",
+                        client_id=client_id,
+                        error=str(e),
+                        error_type=e.error_type,
+                        attempt=attempt + 1,
+                    )
+                    raise
+                delay = RETRY_DELAYS[attempt]
+                await logger.awarning(
+                    "order_submit_retry",
+                    client_id=client_id,
+                    error=str(e),
+                    error_type=e.error_type,
+                    attempt=attempt + 1,
+                    retry_delay=delay,
+                )
+                await asyncio.sleep(delay)
+        in_flight.status = InFlightOrderStatus.DONE
+        raise last_error
 
     async def _normalize_quantity(self, request: OrderRequest) -> None:
         info = self._instrument_cache.get(request.symbol)
@@ -74,14 +96,18 @@ class OrderManager:
 
         qty = request.quantity
         original_qty = qty
-        if info.max_qty and qty > info.max_qty:
-            qty = info.max_qty
+        effective_max = info.max_qty
+        if request.order_type == OrderType.MARKET and info.max_mkt_qty and info.max_mkt_qty > 0:
+            effective_max = info.max_mkt_qty
+        if effective_max and qty > effective_max:
+            qty = effective_max
             await logger.awarning(
                 "qty_clamped_to_max",
                 symbol=request.symbol,
                 original=str(original_qty),
                 clamped=str(qty),
-                max_qty=str(info.max_qty),
+                max_qty=str(effective_max),
+                order_type=request.order_type.value,
             )
         if info.qty_step and info.qty_step > 0:
             steps = (qty / info.qty_step).quantize(Decimal("1"), rounding=ROUND_DOWN)

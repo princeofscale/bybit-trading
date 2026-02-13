@@ -10,7 +10,7 @@ from config.settings import AppSettings, RiskSettings
 from config.strategy_profiles import StrategyProfile, profile_to_risk_settings
 from config.trading_pairs import get_ccxt_symbols
 from core.candle_buffer import CandleBuffer
-from core.event_bus import EventBus
+from core.event_bus import EventBus, EventType
 from core.orchestrator_commands import OrchestratorCommandsMixin
 from core.orchestrator_execution import OrchestratorExecutionMixin
 from core.orchestrator_loops import OrchestratorLoopsMixin
@@ -22,8 +22,10 @@ from exchange.order_manager import OrderManager
 from exchange.position_manager import PositionManager
 from exchange.rate_limiter import RateLimiter
 from exchange.rest_api import RestApi
+from exchange.websocket_manager import WebSocketManager
 from journal.reader import JournalReader
 from journal.writer import JournalWriter
+from monitoring.api import DashboardService
 from monitoring.metrics import MetricsRegistry
 from monitoring.telegram_bot import TelegramAlertSink
 from portfolio.portfolio_manager import PortfolioManager
@@ -76,6 +78,8 @@ class TradingOrchestrator(
         self._preprocessor: CandlePreprocessor | None = None
         self._feature_engineer: FeatureEngineer | None = None
         self._telegram_sink: TelegramAlertSink | None = None
+        self._ws_manager: WebSocketManager | None = None
+        self._dashboard: DashboardService | None = None
         self._metrics = MetricsRegistry()
 
         self._periodic_tasks: list[asyncio.Task[None]] = []
@@ -180,9 +184,30 @@ class TradingOrchestrator(
         self._event_bus = EventBus()
         await self._event_bus.start()
 
+        self._ws_manager = WebSocketManager(self._client, self._event_bus)
+        await self._ws_manager.start()
+        for sym in self._symbols:
+            self._ws_manager.subscribe_ohlcv(sym, self._settings.trading.default_timeframe)
+        self._ws_manager.subscribe_positions(self._symbols)
+        self._ws_manager.subscribe_balance()
+
+        self._event_bus.subscribe(EventType.KLINE, self._ws_kline_handler)
+
         await self._setup_telegram()
         self._restore_strategy_states_from_positions()
         await self._reconcile_recovered_positions()
+
+        if self._settings.dashboard.enabled:
+            self._dashboard = DashboardService(
+                host=self._settings.dashboard.host,
+                port=self._settings.dashboard.port,
+            )
+            self._dashboard.set_metrics_registry(self._metrics)
+            self._dashboard.state.session_id = self._session_id
+            self._dashboard.state.strategies = [s.name for s in strategies]
+            self._dashboard.state.bot_state = "running"
+            await self._dashboard.start()
+            self._periodic_tasks.append(asyncio.create_task(self._dashboard_update_loop()))
 
         self._periodic_tasks.append(asyncio.create_task(self._candle_poll_loop()))
         self._periodic_tasks.append(asyncio.create_task(self._trading_stop_worker_loop()))
@@ -191,6 +216,8 @@ class TradingOrchestrator(
 
         if self._telegram_sink:
             self._periodic_tasks.append(asyncio.create_task(self._telegram_poll_loop()))
+
+        self._periodic_tasks.append(asyncio.create_task(self._rebalance_loop()))
 
         if self._settings.ml.enabled:
             self._periodic_tasks.append(asyncio.create_task(self._ml_retrain_loop()))
@@ -318,6 +345,13 @@ class TradingOrchestrator(
                 f"📡 Сигналов: `{self._signals_count}` | Сделок: `{self._trades_count}`"
             )
             await self._telegram_sink.close()
+
+        if self._dashboard:
+            self._dashboard.state.bot_state = "stopped"
+            await self._dashboard.stop()
+
+        if self._ws_manager:
+            await self._ws_manager.stop()
 
         if self._event_bus:
             await self._event_bus.stop()

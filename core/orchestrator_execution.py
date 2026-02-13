@@ -199,9 +199,24 @@ class OrchestratorExecutionMixin:
             if pos_for_dca and pos_for_dca.size > 0:
                 await self._evaluate_dca(symbol, df)
 
+        ob_meta = await self._fetch_orderbook_meta(symbol)
+
         signal = self._strategy_selector.get_best_signal(symbol, df)
         if not signal:
             return
+
+        if ob_meta:
+            signal.metadata.update(ob_meta)
+            max_spread = float(self._settings.risk.max_spread_bps)
+            if ob_meta.get("spread_bps", 0) > max_spread:
+                await logger.ainfo("signal_rejected_spread", symbol=symbol, spread_bps=ob_meta["spread_bps"])
+                return
+            if signal.direction in (SignalDirection.LONG, SignalDirection.SHORT):
+                imbalance = ob_meta.get("orderbook_imbalance", 0.0)
+                agrees = (signal.direction == SignalDirection.LONG and imbalance > 0.1) or \
+                         (signal.direction == SignalDirection.SHORT and imbalance < -0.1)
+                if agrees:
+                    signal.confidence = min(1.0, signal.confidence + 0.05)
 
         mtf_ok, mtf_reason, mtf_meta = await self._evaluate_mtf_confirm(signal)
         if not mtf_ok:
@@ -315,7 +330,18 @@ class OrchestratorExecutionMixin:
                 )
                 await self._ensure_position_trading_stop(signal.symbol)
 
-            await self._record_execution_quality(signal, decision.quantity, in_flight)
+            if in_flight.filled_qty > 0 and in_flight.filled_qty < request.quantity:
+                await logger.awarning(
+                    "partial_fill_detected",
+                    symbol=signal.symbol,
+                    requested=str(request.quantity),
+                    filled=str(in_flight.filled_qty),
+                )
+                self._metrics.counter("partial_fills").increment()
+
+            actual_qty = in_flight.filled_qty if in_flight.filled_qty > 0 else decision.quantity
+
+            await self._record_execution_quality(signal, actual_qty, in_flight)
             self._sync_strategy_state(signal)
             if not reduce_only:
                 self._original_entry_qty[signal.symbol] = decision.quantity
@@ -641,6 +667,35 @@ class OrchestratorExecutionMixin:
             return result if result else None
         except Exception:
             return None
+
+    async def _fetch_orderbook_meta(self, symbol: str) -> dict[str, float]:
+        if not self._rest_api:
+            return {}
+        try:
+            from indicators.custom import orderbook_imbalance, bid_ask_spread
+            ob = await self._rest_api.fetch_orderbook(symbol, limit=20)
+            if not isinstance(ob, dict):
+                return {}
+            bids_raw = ob.get("bids")
+            asks_raw = ob.get("asks")
+            if not isinstance(bids_raw, list) or not isinstance(asks_raw, list):
+                return {}
+            bids = [(float(p), float(q)) for p, q in bids_raw]
+            asks = [(float(p), float(q)) for p, q in asks_raw]
+            if not bids or not asks:
+                return {}
+            imbalance = orderbook_imbalance(bids, asks, depth=10)
+            spread = bid_ask_spread(bids[0][0], asks[0][0])
+            spread_bps = spread * 10000
+            return {
+                "orderbook_imbalance": imbalance,
+                "spread_bps": spread_bps,
+                "best_bid": bids[0][0],
+                "best_ask": asks[0][0],
+            }
+        except Exception as exc:
+            await logger.awarning("orderbook_fetch_failed", symbol=symbol, error=str(exc))
+            return {}
 
     async def _evaluate_dca(self, symbol: str, df) -> bool:
         guards = self._settings.risk_guards
@@ -1038,6 +1093,8 @@ class OrchestratorExecutionMixin:
             self._risk_manager.record_trade_result(is_win=is_win, symbol=signal.symbol)
         if self._strategy_selector:
             self._strategy_selector.record_trade_result(signal.strategy_name, realized_pnl)
+        if self._portfolio_manager:
+            self._portfolio_manager.record_trade(signal.strategy_name, pnl_pct)
 
         side = "long" if signal.direction == SignalDirection.CLOSE_LONG else "short"
 

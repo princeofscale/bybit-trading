@@ -15,6 +15,7 @@ class InstrumentInfo(BaseModel):
     quote_coin: str
     min_qty: Decimal
     max_qty: Decimal
+    max_mkt_qty: Decimal = Decimal("0")
     qty_step: Decimal
     min_price: Decimal
     max_price: Decimal

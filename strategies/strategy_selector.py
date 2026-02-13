@@ -177,6 +177,16 @@ class StrategySelector:
         self._strategies.pop(name, None)
         self._health.pop(name, None)
 
+    def update_strategy_weights(self, allocations: dict[str, Decimal]) -> None:
+        if not allocations:
+            return
+        max_alloc = max(float(v) for v in allocations.values()) if allocations else 1.0
+        for name, alloc in allocations.items():
+            health = self._health.get(name)
+            if health:
+                normalized = float(alloc) / max_alloc if max_alloc > 0 else 1.0
+                health.weight = max(0.3, min(1.5, normalized * 1.2))
+
     def set_regime_map(self, regime: str, strategy_names: list[str]) -> None:
         self._regime_map[regime] = strategy_names
 

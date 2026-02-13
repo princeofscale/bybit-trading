@@ -224,14 +224,13 @@ class RestApi:
         market = self._client.exchange.market(symbol)
         raw_info = market.get("info", {})
         lot_filter = raw_info.get("lotSizeFilter", {})
-        raw_max_qty = lot_filter.get("maxOrderQty") or lot_filter.get("maxMktOrderQty")
         ccxt_max_qty = market["limits"]["amount"]["max"]
-        if raw_max_qty:
-            max_qty = Decimal(str(raw_max_qty))
-        elif ccxt_max_qty:
-            max_qty = Decimal(str(ccxt_max_qty))
-        else:
-            max_qty = Decimal("999999")
+        raw_limit_max = lot_filter.get("maxOrderQty")
+        raw_mkt_max = lot_filter.get("maxMktOrderQty")
+        max_qty = Decimal(str(raw_limit_max)) if raw_limit_max else (
+            Decimal(str(ccxt_max_qty)) if ccxt_max_qty else Decimal("999999")
+        )
+        max_mkt_qty = Decimal(str(raw_mkt_max)) if raw_mkt_max else max_qty
         raw_min_qty = lot_filter.get("minOrderQty")
         ccxt_min_qty = market["limits"]["amount"]["min"]
         min_qty = Decimal(str(raw_min_qty)) if raw_min_qty else Decimal(str(ccxt_min_qty or 0))
@@ -246,6 +245,7 @@ class RestApi:
             quote_coin=market["quote"],
             min_qty=min_qty,
             max_qty=max_qty,
+            max_mkt_qty=max_mkt_qty,
             qty_step=qty_step,
             min_price=Decimal(str(market["limits"]["price"]["min"] or 0)),
             max_price=Decimal(str(market["limits"]["price"]["max"] or 999999)),

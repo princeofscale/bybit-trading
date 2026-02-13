@@ -108,6 +108,59 @@ async def test_submit_order_clamps_quantity_to_max(order_manager: OrderManager, 
     assert placed.quantity == Decimal("1000")
 
 
+async def test_market_order_uses_max_mkt_qty(order_manager: OrderManager, mock_rest_api: AsyncMock) -> None:
+    mock_rest_api.fetch_instrument_info.return_value = InstrumentInfo(
+        symbol="ARUSDT",
+        ccxt_symbol="AR/USDT:USDT",
+        category=MarketCategory.LINEAR,
+        base_coin="AR",
+        quote_coin="USDT",
+        min_qty=Decimal("0.1"),
+        max_qty=Decimal("40600"),
+        max_mkt_qty=Decimal("4060"),
+        qty_step=Decimal("0.1"),
+        min_price=Decimal("0.01"),
+        max_price=Decimal("1000000"),
+        tick_size=Decimal("0.01"),
+    )
+    request = OrderRequest(
+        symbol="AR/USDT:USDT",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        quantity=Decimal("19985"),
+    )
+    await order_manager.submit_order(request)
+    placed = mock_rest_api.place_order.call_args.args[0]
+    assert placed.quantity == Decimal("4060.0")
+
+
+async def test_limit_order_uses_max_qty_not_mkt(order_manager: OrderManager, mock_rest_api: AsyncMock) -> None:
+    mock_rest_api.fetch_instrument_info.return_value = InstrumentInfo(
+        symbol="ARUSDT",
+        ccxt_symbol="AR/USDT:USDT",
+        category=MarketCategory.LINEAR,
+        base_coin="AR",
+        quote_coin="USDT",
+        min_qty=Decimal("0.1"),
+        max_qty=Decimal("40600"),
+        max_mkt_qty=Decimal("4060"),
+        qty_step=Decimal("0.1"),
+        min_price=Decimal("0.01"),
+        max_price=Decimal("1000000"),
+        tick_size=Decimal("0.01"),
+    )
+    request = OrderRequest(
+        symbol="AR/USDT:USDT",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=Decimal("19985"),
+        price=Decimal("5.0"),
+    )
+    await order_manager.submit_order(request)
+    placed = mock_rest_api.place_order.call_args.args[0]
+    assert placed.quantity == Decimal("19985.0")
+
+
 async def test_submit_order_failure(order_manager: OrderManager, mock_rest_api: AsyncMock) -> None:
     mock_rest_api.place_order.side_effect = InsufficientFundsError("no funds")
     request = OrderRequest(

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import structlog
 
+from core.event_bus import Event, EventType
 from monitoring.telegram_bot import TelegramFormatter
 
 logger = structlog.get_logger("orchestrator_loops")
@@ -16,12 +17,38 @@ class OrchestratorLoopsMixin:
             try:
                 for symbol in self._symbols:
                     await self._poll_and_analyze(symbol)
-                await asyncio.sleep(30)
+                await asyncio.sleep(120)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 await logger.aerror("candle_poll_error", error=str(exc))
-                await asyncio.sleep(30)
+                await asyncio.sleep(120)
+
+    async def _ws_kline_handler(self, event: Event) -> None:
+        symbol = event.payload.get("symbol")
+        if not symbol or not self._candle_buffer:
+            return
+        raw_data = event.payload.get("data")
+        if not raw_data:
+            return
+        try:
+            from exchange.models import Candle
+            from decimal import Decimal
+            for row in raw_data:
+                candle = Candle(
+                    symbol=symbol,
+                    timeframe=event.payload.get("timeframe", "15m"),
+                    open_time=int(row[0]),
+                    open=Decimal(str(row[1])),
+                    high=Decimal(str(row[2])),
+                    low=Decimal(str(row[3])),
+                    close=Decimal(str(row[4])),
+                    volume=Decimal(str(row[5])),
+                )
+                self._candle_buffer.update(symbol, candle)
+            await self._poll_and_analyze(symbol)
+        except Exception as exc:
+            await logger.aerror("ws_kline_handler_error", symbol=symbol, error=str(exc))
 
     async def _balance_poll_loop(self) -> None:
         was_halted = False
@@ -111,6 +138,71 @@ class OrchestratorLoopsMixin:
             except Exception as exc:
                 await logger.aerror("telegram_poll_error", error=str(exc))
                 await asyncio.sleep(10)
+
+    async def _dashboard_update_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(10)
+                if not self._dashboard:
+                    continue
+                ds = self._dashboard.state
+                ds.signals_count = self._signals_count
+                ds.trades_count = self._trades_count
+                if self._account_manager:
+                    ds.equity = self._account_manager.equity
+                    ds.peak_equity = self._account_manager.peak_equity
+                    ds.drawdown_pct = self._account_manager.current_drawdown_pct
+                if self._position_manager:
+                    ds.open_positions = [
+                        {
+                            "symbol": p.symbol,
+                            "side": str(p.side),
+                            "size": float(p.size),
+                            "entry_price": float(p.entry_price),
+                            "mark_price": float(p.mark_price),
+                            "unrealized_pnl": float(p.unrealized_pnl),
+                        }
+                        for p in self._position_manager.get_all_positions()
+                        if p.size > 0
+                    ]
+                    ds.unrealized_pnl = self._position_manager.total_unrealized_pnl
+                if self._risk_manager:
+                    ds.risk_state = self._risk_manager.risk_state()
+                ds.bot_state = "paused" if self._trading_paused else "running"
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                await logger.aerror("dashboard_update_error", error=str(exc))
+
+    async def _rebalance_loop(self) -> None:
+        await asyncio.sleep(60)
+        while True:
+            try:
+                await asyncio.sleep(6 * 3600)
+                if not self._portfolio_manager or not self._strategy_selector:
+                    continue
+                if self._account_manager:
+                    balance = await self._account_manager.sync_balance()
+                    self._portfolio_manager.update_equity(balance.total_equity)
+                self._portfolio_manager.calculate_target_allocation(method="performance")
+                if not self._portfolio_manager.check_rebalance_needed():
+                    continue
+                actions = self._portfolio_manager.execute_rebalance()
+                if not actions:
+                    continue
+                new_allocs = self._portfolio_manager.current_allocations
+                self._strategy_selector.update_strategy_weights(new_allocs)
+                await logger.ainfo("portfolio_rebalanced", actions=len(actions))
+                if self._telegram_sink:
+                    lines = [f"  `{a.strategy_name}`: {float(a.delta_pct * 100):+.1f}%" for a in actions[:8]]
+                    await self._telegram_sink.send_message_now(
+                        f"📊 *Ребалансировка портфеля*\n"
+                        f"─────────────────────\n" + "\n".join(lines)
+                    )
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                await logger.aerror("rebalance_loop_error", error=str(exc))
 
     async def _ml_retrain_loop(self) -> None:
         await asyncio.sleep(60)
